@@ -13,7 +13,7 @@ import { EditorStore, type Loaded, type Scene } from "../src/core";
 import { apply, plan } from "../src/lib/heightfield-plan";
 import { nearestTread, treadAt } from "../src/lib/spawn-check";
 import { grids } from "../src/lib/voxel";
-import { readWaterLook, waterLookProblems, withWaterLook, WATER_LOOK_BEGIN } from "../src/lib/water-look";
+import { expandWaterPreset, readWaterLook, waterLookProblems, withWaterLook, WATER_LOOK_BEGIN } from "../src/lib/water-look";
 import { validate } from "../src/registry";
 import { tools as gameTools } from "../src/tools/game";
 import { themeKeyword, tools as inspectTools } from "../src/tools/inspect";
@@ -175,7 +175,7 @@ test("set_water_look: one wum.level.water block at the top of the script, rewrit
   assert.ok(script().endsWith(user));
   assert.equal((await call(s, "set_water_look", { opacity: 1, reflection: 0.3, fields: { SubtractColourScale: 0.5 } })).changed, false);
   await assert.rejects(() => call(s, "set_water_look", { fields: { Haze: 1 } }), /Haze: not a water field/);
-  await assert.rejects(() => call(s, "set_water_look", {}), /give opacity, reflection, shade, landAmbient, landDiffuse or fields/);
+  await assert.rejects(() => call(s, "set_water_look", {}), /give a preset, opacity, reflection, shade, landAmbient, landDiffuse or fields/);
   assert.equal((await call(s, "set_water_look", { clear: true })).look, null);
   assert.equal(script(), user);
 });
@@ -222,4 +222,30 @@ test("game_probe: the worms at turn 1 against their knots, and each death with i
   const w = await call(s, "game_probe", { units: "world" });
   assert.deepEqual(w.spawns[0].at, [10000, 40, 0]);
   await assert.rejects(() => call(gameSession([], []).s, "game_probe", {}), /no level\.test\.probe/);
+});
+
+test("set_water_look presets: sand expands to the verified fields, explicit fields win, unverified themes are reported", async () => {
+  const e = expandWaterPreset("sand", undefined, {}, "ARABIAN", "DAY");
+  assert.equal(e.verified, true);
+  assert.deepEqual([e.look.NearOpacity, e.look.ReflectionStrength], [1, 0]);
+  assert.equal(expandWaterPreset("sand", undefined, {}, "ARABIAN", "EVENING").verified, false);
+  assert.equal(expandWaterPreset("lava", undefined, {}, "ARABIAN", "DAY").verified, false);
+  assert.throws(() => expandWaterPreset("ice", undefined, {}, "ARABIAN", "DAY"), /preset 'ice' is not one of sand, lava, murk/);
+  const user = "-- mine\n";
+  const { s, script } = session({}, user);
+  await call(s, "set_theme", { theme: "ARABIAN" }); await call(s, "set_time_of_day", { timeOfDay: "DAY" });
+  const r = await call(s, "set_water_look", { preset: "sand", tint: [200, 170, 120], reflection: 0.5 });
+  assert.equal(r.preset.verified, true);
+  assert.deepEqual(r.preset.overridden, ["ReflectionStrength"]);
+  const look = readWaterLook(script())!;
+  assert.deepEqual([look.NearOpacity, look.ReflectionStrength], [1, 0.5]);
+  assert.deepEqual([look.LightDiffuse, look.LightAmbient], [[200, 170, 120], [100, 85, 60]]);
+  assert.ok(script().endsWith(user));
+  await call(s, "set_theme", { theme: "PREHISTORIC" }); await call(s, "set_time_of_day", { timeOfDay: "EVENING" });
+  const u = await call(s, "set_water_look", { preset: "sand" });
+  assert.equal(u.preset.verified, false);
+  assert.match(u.preset.note, /UNVERIFIED on PREHISTORIC EVENING \(tried on ARABIAN DAY\)/);
+  await assert.rejects(() => call(s, "set_water_look", { tint: [1, 2, 3] }), /tint goes with a preset/);
+  await assert.rejects(() => call(s, "set_water_look", { preset: "sand", clear: true }), /give no preset/);
+  await assert.rejects(() => call(s, "set_water_look", { preset: "ice" }), /must be one of sand, lava, murk/);
 });

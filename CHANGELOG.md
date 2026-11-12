@@ -1,5 +1,79 @@
 # Changelog
 
+## Unreleased
+
+Melange 0.15.0, not yet released. Erg: spawn areas dealt per match, map packs that pin their time of day and name
+their own picture, sea materials and a level haze; and the map builder (erg-mcp) grown by a second map, Dustcrown
+(Foldspace's map 2, built in `tools/erg-mcp/bench/dustcrown`).
+
+### Added
+
+- Erg: **areas dealt per match** (`spawns.mode` `areas`). A level names spawn areas in groups with a deal pattern and
+  opposite pairs; each match deals the teams onto areas from its seed, the same on every peer and in a replay
+  (see [docs/erg.md](docs/erg.md)). The Erg panel edits them (Level settings, Spawn mode "Areas dealt per match"). A
+  pack that uses it declares `"melange": {"range": ">=0.15.0"}`; the Erg export writes that range by itself.
+- Map packs: a level's `spice.json` entry may pin its time of day in every match (`"timeOfDay"`: `DAY`, `EVENING`,
+  `NIGHT` or `level`; Versus picks one at random otherwise) and name its picture for the game's map lists (`"image"`, a
+  PNG in the pack, shown instead of the picture of the map it was built on). See [docs/spice.md](docs/spice.md).
+- Sea materials: a level's script sets `wum.level.water{Sea = {r, g, b, opacity}, SeaKeep = {reflection, foam}}` and
+  client mods hear `melange.level.sea`, so a graphics mod that replaces the water shader can draw a sea of sand or lava
+  (Sunstone 2.4 does). Render state only.
+- Level haze: `wum.level.water{Haze = {r, g, b, amount}, HazeRange = {start, distance}}` and the event
+  `melange.level.haze`, so a graphics mod's distance haze takes the level's colour instead of the sky's blue (a sand
+  sea no longer runs out into a pale blue ring; Sunstone 2.4 honours it). Render state only.
+- Erg Test loads a project's own mesh banks (`<projects>\<project>\meshes\*.xom`, and `level.test {meshBanks}`), so
+  a map's detail meshes draw in a Test as they do from its installed pack.
+- Erg, for test tools: `level.test {level}` starts an **installed pack level** in a Quick Game (its built files, mesh
+  banks and pinned time of day, as from the menus), and `level.test {scheme: {name, fields}}` sets the match's game
+  style in `GM.SchemeData` before the level's set-up reads it, so a plugin that keys on the style (Sandtide's Sandworms)
+  plays in a Test. `level.test.lua` runs engine Lua in the match VM at a sim tick and `level.test.placeWorm` stands a
+  worm at a point, in a Test only. `level.materials {colors: true}` also answers the colour of the texture a material's
+  sides draw (`sideColors`): a cliff of `grass01` is rock.
+- `input.drive` (the test tools' drive) holds the utilities' own inputs (`Input.FireUtil`, a jetpack's thrust, the
+  `Input.Jetpack.*` and turn inputs), the girder's (`Girder.Move.Forward`, `Girder.Raise`, `Girder.Place`, ...) and a
+  hand-flown camera's (`Camera.Forward`, ...), which the keys post in those control groups.
+- `build.ps1 -Out <name>` builds into `build\<Config>-<name>` and `dist-<name>\`, so a second (private) build never
+  replaces `dist\`.
+
+### Map builder (erg-mcp)
+
+Every new feature is additive or off by default: the Caldera bench still builds byte for byte, and older projects open
+as before ([docs/erg-mcp.md](docs/erg-mcp.md)).
+
+- Solids: `build_compound` (stepped and tiered blocks, shape bands with `fromY`/`toY`), `build_mesa` (terraced mesas
+  with `ledgeAt`, a `cap` dome, erosion, treads, bedded strata, gullies and `onSkin`), `build_outcrop`,
+  `build_boulder_field`; tower roofs, material bands and trim on `build_castle`, `build_wall`, `build_tower`,
+  `build_keep` and `build_compound`; `gates[].jambBevel`, splayed jambs and tunnel caps; `coreMaterial` on the
+  structure tools (what a crater shows).
+- Terrain: `dunes()` and `ridged()` height expressions, `crestMaterial` and `troughMaterial` on `heightfield_drape`
+  with blended edges (`blend`) and `craterSlope`, `avoidBand` and `floorLattice`, `maskLets`, a coast rim,
+  `fillBasins`, pit fill, and `edge.soft` on material rules.
+- Look: `set_water_look` presets (sand, lava, murk) with the sea material, the level haze and `opaque`;
+  `tint_landscape` for the Arabian theme (tiles A01-A64), `colorSpace: "srgb"`, `carrier: "theme"`, a tint preview in
+  the renders and a shade fit in the look grade (`game_material_shots {faces}`, `tint_landscape {grade}`);
+  `set_level_look` and `set_level_thumbnail` (and `export`'s `timeOfDay` and `thumbnail`); `set_level_camera`;
+  `render_view {waterLook, gameMatch, sideTextures}`.
+- Detail meshes: `build_rock_bank` (a seeded rock mesh library shipped as one mod mesh bank: hull boulders, strata,
+  scree, and a smooth `lathe` kind for domes, onions, spires and drums; `preview`), `place_mod_mesh {rotUnits}`
+  (`"radians"`, the default, or `"degrees"`), a mesh-bank lint, one prop search for the detail checks.
+- Checks: `check_height_line`, `check_tool_reach` (jetpack, rope and girder reach from the spawn areas; the jetpack's
+  measured in the game), `check_pits` (shore perches, filters, enclosed rooms, `fix`), `check_holes` along a walk,
+  `check_exposed_core`, `check_crater_traps`, `check_sea_opacity`, `describe_dunes`, `lint_scatter_stairs`,
+  `describe_level` `landBounds`, and a warning at `connect` and `open_project` when the Melange served or installed is
+  older than the project needs. The export gate raises a pack's Melange range for the features it uses.
+- Spawns: `place_spawn_knots {mode: "areas"}` places named areas of knots with a deal pattern and opposite pairs.
+- Test harness: `game_give_weapons`, `game_park_worm`, `game_air_strike`, `game_ground_scan`, `game_end_turns`,
+  `game_use_tool` (jetpack, rope by a solved angle, girder), `game_crater_look`, `game_line_clearance`,
+  `game_start_versus` (the Versus menus), `game_localnet_match` (two peers' spawn deals compared),
+  `push_project_to_game`, `prune_evidence`.
+- `tools/erg-mcp/bench/gate.ps1`: every check a builder change must pass in one command, with the Caldera bench rebuilt
+  and compared byte for byte.
+
+### Changed
+
+- `level.build` on a pack that needs a newer Melange says so (`needs Melange >=X and this is Melange Y`) instead of
+  `declares no valid levels`.
+
 ## 0.14.1
 
 In-game Spotify setup with a built-in Client ID.

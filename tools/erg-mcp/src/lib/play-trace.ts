@@ -165,6 +165,7 @@ export interface PerfRun {
   label: string; scene: string; seconds: number; samples: number; startedAt: number;
   fps: PerfStat; busyMs: PerfStat; frameMs: PerfStat; gpuFrameMs: PerfStat; gpuWorldMs?: PerfStat; gpuPostWorldMs?: PerfStat; gpuFinalMs?: PerfStat;
   game?: string;                            // the game's build it ran in, so runs of one game pair up
+  pose?: string;                            // the pose it held (game_perf {pose}): runs of one pose compare fairly
   from?: "saved";                           // read back from the runs file (another erg-mcp process's run)
 }
 

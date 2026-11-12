@@ -45,4 +45,8 @@ bool ParseKind(const Json* o, bool* survivor, std::string* err);
 Json KindJson(bool survivor);
 bool ParseScript(const Json* o, ScriptMeta* out, std::string* err);
 Json ScriptJson(const ScriptMeta& m);
+// The "spawns" block: {mode} and, with mode areas only, {areas: [{name, group, knots}], pattern: ["group",
+// "group:opposite"], opposite: [[a, b]]} (pattern and opposite optional). Areas are validated (ValidateSpawnAreas).
+bool ParseSpawns(const Json* o, SpawnMode* mode, SpawnAreas* areas, std::string* err);
+Json SpawnsJson(SpawnMode mode, const SpawnAreas& areas);
 }  // namespace melange::erg::jsonio

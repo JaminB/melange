@@ -5,8 +5,9 @@
 //   tint_variants  per-copy tint variance (lib/tint-jitter.ts): seeded hue/saturation/value jitter of a palette, with an
 //                  edge falloff, so a cluster of one piece is not one flat colour
 // Both read-only.
-import { dropPoint } from "../core";
-import { DEG, topOf } from "../lib/place-geom";
+import { Group, RemoveDetail, dropPoint } from "../core";
+import { matchesSearch, searchSchema, searchTerms, type Search } from "../lib/detail-search";
+import { DEG, commit, topOf } from "../lib/place-geom";
 import { clumps, type Piece } from "../lib/dress-lint";
 import { supportOf, type Ground, type SupportClump } from "../lib/prop-support";
 import { tintVariants } from "../lib/tint-jitter";
@@ -46,21 +47,22 @@ const hexRe = /^#[0-9a-fA-F]{6}$/;
 export const tools: Tool[] = [
   {
     name: "lint_support",
-    description: "Ground support of a decoration layer's props: the scenery copies whose names contain any of `search` (default [\"_dtl\"]) as drawn, grouped into clumps (pieces within `gap`, default 0.3 map). Each clump's footprint is sampled on a `grid` x `grid` (default 5) and a sample is in contact where the ground comes up to the clump's underside there (within `tol`, default 0.15 map). A clump on ground steeper than `minSlope` (default 55 degrees, the steepest under its footprint) is supported when `minContact` (default 0.6) of its footprint touches the ground, or another clump of the searched layers reaches its underside on its downhill side (talus, a ledge). Answers the unsupported clumps (ids, centre, size, slope, contact share) and counts by verdict (flat, ground, talus, unsupported). Read-only: remove or re-seat what it lists. Map units.",
+    description: "Ground support of a decoration layer's props: the scenery copies whose names contain any of `search` (default [\"_dtl\"]) (a fragment or a list; a copy matches by its name or its resource, as lint_contact's) as drawn, grouped into clumps (pieces within `gap`, default 0.3 map). Each clump's footprint is sampled on a `grid` x `grid` (default 5) and a sample is in contact where the ground comes up to the clump's underside there (within `tol`, default 0.15 map). A clump on ground steeper than `minSlope` (default 55 degrees, the steepest under its footprint) is supported when `minContact` (default 0.6) of its footprint touches the ground, or another clump of the searched layers reaches its underside on its downhill side (talus, a ledge). Answers the unsupported clumps (ids, centre, size, slope, contact share) and counts by verdict (flat, ground, talus, unsupported). Read-only by default: re-seat what it lists, or `remove: true` removes every copy of the unsupported clumps (one undo step; `removed` counts them), as lint_contact's `remove` does. Map units.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
-      search: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8 },
+      search: searchSchema,
+      remove: { type: "boolean", description: "Remove the copies of every unsupported clump (one undo step). Default false: nothing is edited." },
       holders: { type: "array", items: { type: "string" }, maxItems: 8, description: "More name fragments whose copies may hold a clump up (talus) without being judged themselves." },
       gap: { type: "number", minimum: 0 }, grid: { type: "integer", minimum: 2, maximum: 9 }, tol: { type: "number", minimum: 0 },
       minSlope: { type: "number", minimum: 0, maximum: 90 }, minContact: { type: "number", minimum: 0, maximum: 1 },
       limit: { type: "integer", minimum: 0, maximum: 2000 },
     } },
-    async handler(s, a: { search?: string[]; holders?: string[]; gap?: number; grid?: number; tol?: number; minSlope?: number; minContact?: number; limit?: number }) {
+    async handler(s, a: { search?: Search; remove?: boolean; holders?: string[]; gap?: number; grid?: number; tol?: number; minSlope?: number; minContact?: number; limit?: number }) {
       const { store } = s.requireProject();
-      const qs = (a.search ?? ["_dtl"]).map((q) => q.toLowerCase()), hs = (a.holders ?? []).map((q) => q.toLowerCase());
+      const qs = searchTerms(a.search), hs = searchTerms(a.holders, []);
       const scen = store.scene.details.filter((d) => d.src === null && classifyDetail(d).role === "scenery");
-      const judged = scen.filter((d) => qs.some((q) => d.name.toLowerCase().includes(q)));
-      if (!judged.length) throw new ToolError(`no scenery copy's name contains any of ${JSON.stringify(a.search ?? ["_dtl"])}`);
-      const extra = scen.filter((d) => !judged.includes(d) && hs.some((q) => d.name.toLowerCase().includes(q)));
+      const judged = scen.filter((d) => matchesSearch(d, qs));
+      if (!judged.length) throw new ToolError(`no scenery copy's name or resource contains any of ${JSON.stringify(qs)}`);
+      const extra = scen.filter((d) => !judged.includes(d) && matchesSearch(d, hs));
       const { meshes, without } = await placedMeshes(s, store.frames, [...judged, ...extra]);
       const judgedIds = new Set(judged.map((d) => d.id));
       const vertsOf = new Map<number, number[]>();
@@ -83,8 +85,11 @@ export const tools: Tool[] = [
       const out = cj.map((c) => supportOf(c, g, all, { grid: a.grid, tol: a.tol, minSlope: a.minSlope, minContact: a.minContact }));
       const bad = out.filter((v) => !v.supported);
       const by = (k: string | null) => out.filter((v) => v.by === k).length;
+      const drop = a.remove ? [...new Set(bad.flatMap((v) => v.ids))] : [];
+      if (drop.length) commit(store, drop.length === 1 ? new RemoveDetail(drop[0]) : new Group(`Remove ${drop.length} unsupported props`, drop.map((id) => new RemoveDetail(id))));
       return { units: "map", pieces: pj.length, clumps: cj.length, noMesh: without.slice(0, 10),
         counts: { flat: by("flat"), ground: by("ground"), talus: by("talus"), unsupported: bad.length },
+        ...(a.remove ? { removed: drop.length } : {}),
         unsupported: bad.slice(0, a.limit ?? 200).map((v) => ({ ids: v.ids, at: v.at.map(r2), size: r2(v.size), slope: Math.round(v.slope), contact: r2(v.contact), samples: v.samples })) };
     },
   },

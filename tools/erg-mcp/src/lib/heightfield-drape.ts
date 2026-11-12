@@ -9,7 +9,7 @@
 // Under the skin the core (optional, default on) is the usual stepped field cut down to floor(lowest corner - 0.25), so
 // its steps stay inside the skin; it is planned and packed by heightfield-plan (its cells, blocks and frames as there).
 // The skin's corner heights are the mean of the field's heights of the columns round each corner.
-import { AddFrame, Group, LIMITS, blockFrames, cellBudget, filled, validNewFrameScale, type Command, type EditorStore, type Frame, type Vec3 } from "../core";
+import { AddFrame, CORNER_BIT, Group, LIMITS, blockFrames, cellBudget, filled, material, secondOf, validNewFrameScale, withSecond, type Command, type EditorStore, type Frame, type Vec3 } from "../core";
 import { ToolError } from "../registry";
 import { floorReport, plan, planCommands, sampleField, SIDE, type Area, type Field, type FieldArgs, type Plan } from "./heightfield-plan";
 import { WORLD_PER_MAP, tidy } from "./voxel";
@@ -20,6 +20,9 @@ export interface DrapeArgs extends FieldArgs {
   skirtTo?: number;            // level y (units): the core reaches down to here instead of the floor (a hollow skin gets one)
   skirtTop?: number;           // level y (units): only columns whose skin's lowest corner is at or under it get the core
   steepMaterial?: SteepMaterial;   // cliffs: a skin column this steep takes this material, whatever the rules say
+  crestMaterial?: CurveMaterial;   // dune crests: a skin column curving up (a ridge) this much takes this material
+  troughMaterial?: CurveMaterial;  // the hollows between: a column curving down this much takes this one
+  coast?: CoastMaterial;           // the shore: a skin column that dips to the sea takes the rim's material, before the others
   tileOrigin?: [number, number];   // x, z (units): a corner of the skin's 31 x 31 tiling falls here (snapped to the lattice)
   cornersOff?: CornersOff;         // the tiling shifted so the corners where four skin blocks meet keep off these paths
   refine?: Refine;                 // a finer skin along the trails (or in areas), the coarse one cut out there
@@ -48,6 +51,97 @@ export interface CornersOff { paths: number[][][]; distance?: number; }
  * is at least minSlope (default 50 degrees) takes `material` in every skin voxel instead, and with feather (degrees)
  * the edge is a 4 x 4 ordered dither over minSlope +- feather / 2, not a line. */
 export interface SteepMaterial { material: number; minSlope?: number; feather?: number; }
+
+/** Materials by local curvature (heights from the skin's corners): a column's centre height against the mean of its
+ * four neighbours `radius` map units away (default one voxel) gives the Laplacian, 4 * (mean - centre) * s / (n * s)^2 per
+ * map unit for n columns. A crest (the surface bulging up: Laplacian under -minCurvature) takes crestMaterial, a trough
+ * (over +minCurvature) troughMaterial, in every skin voxel; steepMaterial wins over both and a crest over a trough.
+ * minCurvature is per map unit (default 0.01: a dune of 6 map units over a 40-unit wavelength reads about 0.07 at its
+ * crest). feather (same unit) dithers the edge over minCurvature +- feather / 2 as steepMaterial's does. */
+export interface CurveMaterial { material: number; minCurvature?: number; radius?: number; feather?: number;
+  /** Soften the rule's edge: a column beside the rule's columns takes the material as its SECOND material on the corners
+   * it shares with them (the game's per-corner blend), so the edge is a gradient along the crest line instead of a
+   * saw-tooth of whole columns. Default off. */
+  blend?: boolean; }
+
+/** The island's rim against a recoloured sea (Dustcrown: an ochre cliff ring round the island in a sand-coloured sea).
+ * A skin column whose lowest corner is at or under seaLevel + band (level y, units; band default one voxel) takes
+ * rimMaterial in every skin voxel, before steepMaterial and the crest and trough rules: the shore is the sea's colour
+ * whatever the slope there. blendToSea: the columns beside the rim, inland, take rimMaterial as their second material on
+ * the corners they share with it (the game's per-corner blend), so the rim fades into the land instead of ending on a
+ * line of whole columns. */
+export interface CoastMaterial { seaLevel: number; rimMaterial: number; band?: number; blendToSea?: boolean; }
+
+/** The coast rule over the corner lattice: `top` is seaLevel + band in voxels above the floor. */
+interface Coast { H: ArrayLike<number>; W: number; top: number; m: CoastMaterial; }
+
+const isRim = (c: Coast, i: number, k: number) =>
+  Math.min(c.H[k * c.W + i], c.H[k * c.W + i + 1], c.H[(k + 1) * c.W + i], c.H[(k + 1) * c.W + i + 1]) <= c.top;
+
+/** coast.blendToSea: the corner bits (top and bottom) an inland column shares with a rim column, or 0. */
+function rimEdge(f: Field, c: Coast, i: number, k: number): number {
+  let bits = 0;
+  for (let cz = 0; cz < 2; cz++)
+    for (let cx = 0; cx < 2; cx++) {
+      let touch = false;
+      for (let dz = cz - 1; dz <= cz && !touch; dz++)
+        for (let dx = cx - 1; dx <= cx && !touch; dx++) {
+          const a = i + dx, b = k + dz;
+          if ((!dx && !dz) || a < 0 || b < 0 || a >= f.nx || b >= f.nz || !live(f, b * f.nx + a)) continue;
+          if (isRim(c, a, b)) touch = true;
+        }
+      if (touch) bits |= (1 << CORNER_BIT[1][cz][cx]) | (1 << CORNER_BIT[0][cz][cx]);
+    }
+  return bits;
+}
+
+interface Curve { H: ArrayLike<number>; W: number; nx: number; nz: number; s: number; crest?: CurveMaterial; trough?: CurveMaterial; }
+
+/** The column's Laplacian (1 / map unit) at a ring of n columns, heights from the corner lattice. */
+export function columnCurvature(c: { H: ArrayLike<number>; W: number; nx: number; nz: number; s: number }, i: number, k: number, radius?: number): number {
+  const n = Math.max(1, Math.round((radius ?? c.s) / c.s));
+  const at = (a: number, b: number) => {
+    a = Math.min(Math.max(a, 0), c.nx - 1); b = Math.min(Math.max(b, 0), c.nz - 1);
+    return (c.H[b * c.W + a] + c.H[b * c.W + a + 1] + c.H[(b + 1) * c.W + a] + c.H[(b + 1) * c.W + a + 1]) / 4;
+  };
+  const m = (at(i - n, k) + at(i + n, k) + at(i, k - n) + at(i, k + n)) / 4;
+  return (4 * (m - at(i, k)) * c.s) / ((n * c.s) ** 2);
+}
+
+/** The curvature rule a column falls under (crest first), or undefined. */
+function curveRule(c: Curve, i: number, k: number): "crest" | "trough" | undefined {
+  for (const [r, sign, name] of [[c.crest, -1, "crest"], [c.trough, 1, "trough"]] as const) {
+    if (!r) continue;
+    const min = r.minCurvature ?? 0.01, fe = r.feather ?? 0, cv = sign * columnCurvature(c, i, k, r.radius);
+    if (fe <= 0 ? cv >= min : cv >= min - fe / 2 + (fe * (BAYER[(k % 4) * 4 + (i % 4)] + 0.5)) / 16) return name;
+  }
+  return undefined;
+}
+
+/** CurveMaterial.blend: for a column the curvature rules leave alone, the first blended rule (crest first) that holds on
+ * a column sharing a corner with it, and those corners' mask bits (top and bottom), or null. Steep columns are not
+ * crest or trough (steepMaterial wins), so they lend no corner. */
+function softEdge(f: Field, c: Curve, steep: { H: ArrayLike<number>; W: number; m: SteepMaterial } | undefined, i: number, k: number): { material: number; bits: number } | null {
+  for (const name of ["crest", "trough"] as const) {
+    const r = c[name];
+    if (!r?.blend) continue;
+    let bits = 0;
+    for (let cz = 0; cz < 2; cz++)
+      for (let cx = 0; cx < 2; cx++) {
+        let touch = false;
+        for (let dz = cz - 1; dz <= cz && !touch; dz++)
+          for (let dx = cx - 1; dx <= cx && !touch; dx++) {
+            const a = i + dx, b = k + dz;
+            if ((!dx && !dz) || a < 0 || b < 0 || a >= f.nx || b >= f.nz || !live(f, b * f.nx + a)) continue;
+            if (steep && isSteep(steep, a, b)) continue;
+            if (curveRule(c, a, b) === name) touch = true;
+          }
+        if (touch) bits |= (1 << CORNER_BIT[1][cz][cx]) | (1 << CORNER_BIT[0][cz][cx]);
+      }
+    if (bits) return { material: r.material, bits };
+  }
+  return null;
+}
 
 // a 4 x 4 ordered (Bayer) pattern, 0..15
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
@@ -166,19 +260,39 @@ function tiles(f: Field, H: Float32Array, T: number, ox = 0, oz = 0): Tile[] {
   return out;
 }
 
-function skinWords(f: Field, t: Tile, T: number, steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial }): Uint32Array {
+function skinWords(f: Field, t: Tile, T: number, steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial }, curve?: Curve, coast?: Coast): Uint32Array {
   const X = t.x1 - t.x0, Z = t.z1 - t.z0, w = new Uint32Array(X * T * Z);
   for (let z = 0; z < Z; z++)
     for (let x = 0; x < X; x++) {
       const c = (t.z0 + z) * f.nx + t.x0 + x;
       if (!live(f, c)) continue;
+      if (coast && isRim(coast, t.x0 + x, t.z0 + z)) {
+        const word = filled(coast.m.rimMaterial);
+        for (let y = 0; y < T; y++) w[(z * X + x) * T + y] = word;
+        continue;
+      }
+      // blendToSea: a column beside the rim carries the rim's material on the corners it shares with it, whatever rule
+      // gives it its own
+      const rimBits = coast?.m.blendToSea ? rimEdge(f, coast, t.x0 + x, t.z0 + z) : 0;
+      const toSea = (word: number) => (rimBits && material(word) !== coast!.m.rimMaterial && secondOf(word) < 0 ? withSecond(word, coast!.m.rimMaterial, rimBits) : word);
       if (steep && isSteep(steep, t.x0 + x, t.z0 + z)) {
-        const word = filled(steep.m.material);
+        const word = toSea(filled(steep.m.material));
+        for (let y = 0; y < T; y++) w[(z * X + x) * T + y] = word;
+        continue;
+      }
+      const rule = curve && curveRule(curve, t.x0 + x, t.z0 + z);
+      if (rule) {
+        const word = toSea(filled(curve![rule]!.material));
         for (let y = 0; y < T; y++) w[(z * X + x) * T + y] = word;
         continue;
       }
       // Materials as the stepped field would give its top T voxels, so height bands and surface rules carry over.
-      for (let y = 0; y < T; y++) w[(z * X + x) * T + y] = f.wordAt(c, f.hi[c] - T + y, true);
+      const soft = curve && softEdge(f, curve, steep, t.x0 + x, t.z0 + z);
+      for (let y = 0; y < T; y++) {
+        const own = f.wordAt(c, f.hi[c] - T + y, true);
+        // a voxel the field already blends keeps its own second material
+        w[(z * X + x) * T + y] = rimBits ? toSea(own) : soft && material(own) !== soft.material && secondOf(own) < 0 ? withSecond(own, soft.material, soft.bits) : own;
+      }
     }
   return w;
 }
@@ -195,7 +309,7 @@ function isSteep(st: { H: ArrayLike<number>; W: number; m: SteepMaterial }, i: n
   return sl >= min - fe / 2 + (fe * (BAYER[(k % 4) * 4 + (i % 4)] + 0.5)) / 16;
 }
 
-export interface DrapePlan { field: Field; T: number; tiles: Tile[]; core: Plan | null; report: Record<string, unknown>; steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial };
+export interface DrapePlan { field: Field; T: number; tiles: Tile[]; core: Plan | null; report: Record<string, unknown>; steep?: { H: ArrayLike<number>; W: number; m: SteepMaterial }; curve?: Curve; coast?: Coast;
   parts?: DrapePlan[];   // with refine: the coarse skin (cut out over the zone) and the fine one, applied together
 }
 
@@ -266,6 +380,12 @@ function planDrapeOne(store: EditorStore, a: DrapeArgs): DrapePlan {
   const H = cornerHeights(f), W = f.nx + 1;
   const sm = a.steepMaterial;
   if (sm && (!Number.isInteger(sm.material) || sm.material < 0 || sm.material > 63)) throw new ToolError("steepMaterial.material is a material index 0-63");
+  for (const [r, what] of [[a.crestMaterial, "crestMaterial"], [a.troughMaterial, "troughMaterial"]] as const) {
+    if (!r) continue;
+    if (!Number.isInteger(r.material) || r.material < 0 || r.material > 63) throw new ToolError(`${what}.material is a material index 0-63`);
+    for (const [v, n] of [[r.minCurvature, "minCurvature"], [r.radius, "radius"], [r.feather, "feather"]] as const)
+      if (v !== undefined && !(Number.isFinite(v) && v >= 0 && (n !== "radius" || v > 0))) throw new ToolError(`${what}.${n} is a ${n === "radius" ? "positive" : "non-negative"} number`);
+  }
   // the tiling's origin: tileOrigin's lattice column, or the shift that keeps the meeting corners off cornersOff's paths
   if (a.tileOrigin && a.cornersOff) throw new ToolError("tileOrigin and cornersOff both place the tiling: give one");
   const ku = a.units === "world" ? 1 / WORLD_PER_MAP : 1;
@@ -325,6 +445,7 @@ function planDrapeOne(store: EditorStore, a: DrapeArgs): DrapePlan {
     region: { voxelSize: s, size: [f.nx, f.nz], columns: ts.reduce((n, t) => n + t.columns, 0),
       ...(f.limited ? { slopeLimit: { relax: a.relax ?? 0, ...(a.maxGradient !== undefined ? { maxGradient: a.maxGradient } : {}), passes: f.limited.passes, steepestDegrees: Math.round(f.limited.steepest * 10) / 10,
         note: "the field's heights smoothed (relax) and slope-limited (maxGradient) before the skin and its core are cut, so both follow the same surface" } } : {}),
+      ...(f.basins ? { basins: f.basins } : {}),
       peak: ts.length ? { map: num(top * s + f.t[1]), world: num((top * s + f.t[1]) * WORLD_PER_MAP) } : null,
       // where the skin's walking surface stands for a field height: the floor snapped to the lattice moves it (Caldera's
       // floor -9 at voxel 2.5 snapped to -10, which builders took for the skin standing 1 under the grid)
@@ -346,7 +467,43 @@ function planDrapeOne(store: EditorStore, a: DrapeArgs): DrapePlan {
   if (steep) for (const t of ts) for (let k = t.z0; k < t.z1; k++) for (let i = t.x0; i < t.x1; i++) if (live(f, k * f.nx + i) && isSteep(steep, i, k)) steepCols++;
   if (steep) Object.assign(report, { steepMaterial: { material: sm!.material, minSlope: sm!.minSlope ?? 50, ...(sm!.feather ? { feather: sm!.feather } : {}), columns: steepCols,
     note: "skin columns at least minSlope steep (from their corners) take this material in every skin voxel, so a cliff shows rock instead of a top texture stretched up the face" } });
-  return { field: f, T, tiles: ts, core, report, steep };
+  const curve: Curve | undefined = a.crestMaterial || a.troughMaterial ? { H, W, nx: f.nx, nz: f.nz, s: f.s, crest: a.crestMaterial, trough: a.troughMaterial } : undefined;
+  if (curve) {
+    const count = { crest: 0, trough: 0 };
+    for (const t of ts) for (let k = t.z0; k < t.z1; k++) for (let i = t.x0; i < t.x1; i++) {
+      if (!live(f, k * f.nx + i) || (steep && isSteep(steep, i, k))) continue;
+      const r = curveRule(curve, i, k);
+      if (r) count[r]++;
+    }
+    const part = (r: CurveMaterial | undefined, n: number) => r ? { material: r.material, minCurvature: r.minCurvature ?? 0.01, radius: num(r.radius ?? f.s), ...(r.feather ? { feather: r.feather } : {}), ...(r.blend ? { blend: true } : {}), columns: n } : undefined;
+    let blended = 0;
+    if (curve.crest?.blend || curve.trough?.blend)
+      for (const t of ts) for (let k = t.z0; k < t.z1; k++) for (let i = t.x0; i < t.x1; i++)
+        if (live(f, k * f.nx + i) && !(steep && isSteep(steep, i, k)) && !curveRule(curve, i, k) && softEdge(f, curve, steep, i, k)) blended++;
+    Object.assign(report, { curveMaterials: { ...(curve.crest ? { crest: part(curve.crest, count.crest) } : {}), ...(curve.trough ? { trough: part(curve.trough, count.trough) } : {}),
+      ...(blended ? { blendedEdge: blended } : {}),
+      note: "skin columns whose surface curves up (crest) or down (trough) by at least minCurvature per map unit take that material in every skin voxel, steepMaterial first" + (blended ? "; blendedEdge: the columns beside them that take it as their second material on the shared corners (blend: a gradient instead of a step)" : "") } });
+  }
+  // coast: the rim's columns (and, with blendToSea, the ones that share a corner with them)
+  let coast: Coast | undefined;
+  if (a.coast) {
+    const cm = a.coast;
+    if (!Number.isInteger(cm.rimMaterial) || cm.rimMaterial < 0 || cm.rimMaterial > 63) throw new ToolError("coast.rimMaterial is a material index 0-63");
+    if (!Number.isFinite(cm.seaLevel) || (cm.band !== undefined && !(cm.band >= 0))) throw new ToolError("coast: seaLevel is a level y, band 0 or more");
+    const band = cm.band === undefined ? f.s : cm.band * ku;
+    coast = { H, W, top: (cm.seaLevel * ku + band - f.t[1]) / f.s - f.floor, m: cm };
+    let rim = 0, edge = 0;
+    for (const t of ts) for (let k = t.z0; k < t.z1; k++) for (let i = t.x0; i < t.x1; i++) {
+      if (!live(f, k * f.nx + i)) continue;
+      if (isRim(coast, i, k)) rim++;
+      else if (cm.blendToSea && rimEdge(f, coast, i, k)) edge++;
+    }
+    Object.assign(report, { coast: { rimMaterial: cm.rimMaterial, seaLevel: { map: num(cm.seaLevel * ku), world: num(cm.seaLevel * ku * WORLD_PER_MAP) }, band: num(band / ku), columns: rim,
+      ...(cm.blendToSea ? { blendToSea: true, blendedEdge: edge } : {}),
+      note: "skin columns that dip to seaLevel + band take rimMaterial in every skin voxel, before steepMaterial and the crest and trough rules" + (cm.blendToSea ? "; blendedEdge: the columns inland of them that take it as their second material on the shared corners" : "") +
+        (rim ? "" : "; no column dips that low: the skin does not reach the sea here") } });
+  }
+  return { field: f, T, tiles: ts, core, report, steep, curve, coast };
 }
 
 /** The skin's AddFrame commands for one plan, the block ids and names in `taken` extended. */
@@ -363,7 +520,7 @@ function skinCommands(store: EditorStore, p: DrapePlan, taken: { ids: Set<number
     const frame: Frame = { id: tmp, new: true, parent: f.sceneId!, name,
       pos: [(f.i0 + t.x0 + size[0] / 2) * s, (t.y0 + size[1] / 2) * s, (f.j0 + t.z0 + size[2] / 2) * s],
       rot: [0, 0, 0], scale: [s, s, s], size, voxels: store.freshRef(), heightMap: null, folder: false, corners: t.corners };
-    cmds.push(new AddFrame(store.voxels, frame, skinWords(f, t, p.T, p.steep)));
+    cmds.push(new AddFrame(store.voxels, frame, skinWords(f, t, p.T, p.steep, p.curve, p.coast)));
     made.push({ id: tmp, name, skin: true });
   }
   return cmds;

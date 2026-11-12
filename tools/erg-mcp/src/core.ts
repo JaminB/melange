@@ -16,7 +16,7 @@ export { Frames, frameIndex, round, roundVec, snap, snapVec, translationOnlyFram
 export { cornerOffset, dropPoint, rayTerrain, rayVoxels } from "../../../web/src/panels/erg/model/ground";
 export * from "../../../web/src/panels/erg/model/placing";
 export { Duplicate, Group, setMany } from "../../../web/src/panels/erg/model/edits";
-export { KNOTS, PLACED_OBJECTS, TEAM_KNOTS, checkScene, type Issue } from "../../../web/src/panels/erg/model/checks";
+export { AREA_KNOTS, KNOTS, PLACED_OBJECTS, TEAM_KNOTS, checkScene, type Issue } from "../../../web/src/panels/erg/model/checks";
 
 export * from "../../../web/src/panels/erg/terrain/voxel";
 export * from "../../../web/src/panels/erg/terrain/blend";

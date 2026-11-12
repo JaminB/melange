@@ -1,5 +1,7 @@
 #pragma once
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "oasis/core/server.h"
 
@@ -18,6 +20,10 @@ void InstallErgChannel(); void InstallLevelTest();                              
 void InstallRenderShot(); void InstallLevelTestOps();                                      // render.camera/shot; level.test.explode/quit/fireFactory/probe
 void InstallInputDrive();                                                                         // input.drive (the Controls module's drive)
 bool BuildTestLevel(const std::string& project, const std::string& tod, uint64_t conn, std::string* stem, std::string* title,
-                    std::string* err);   // server thread; tod "" keeps the project's time of day; leased to conn
+                    std::string* err);
+// The mesh banks a project carries for a Test: <projects>\<project>\meshes\*.xom (at most 8, by name), each with the
+// mod id its mesh names start with (the file name up to its first dot: dustcrown.Rocks.xom -> dustcrown). An installed
+// pack loads its banks from its spice.json at launch; a Test of the project loads these (level.test).
+std::vector<std::pair<std::string, std::string>> ProjectMeshBanks(const std::string& project);   // server thread; tod "" keeps the project's time of day; leased to conn
 core::Auth* MakeAuth();                                                                           // launch token, Host, Origin
 }  // namespace melange::oasis::providers

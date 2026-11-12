@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.14.1 LANGUAGES C CXX)
+project(Melange VERSION 0.15.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -524,6 +524,17 @@ add_library(lua50_ref STATIC EXCLUDE_FROM_ALL ${LUA50_SOURCES})
 target_include_directories(lua50_ref PUBLIC ${lua50_SOURCE_DIR}/include PRIVATE ${lua50_SOURCE_DIR}/src)
 target_compile_definitions(lua50_ref PUBLIC LUA_NUMBER=float PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(lua50_ref PRIVATE /W0 /FI${CMAKE_SOURCE_DIR}/tests/lua50_noopt.h)
+
+# spawns.mode areas (erg/luagen.h DealAreas): the spec, the seeded deal, and the generated chunk run in lua50_ref over
+# fake worm containers, with and without Melange's ergSpawnDeal.
+add_executable(erg_spawn_deal_selftest EXCLUDE_FROM_ALL
+    tests/erg_spawn_deal_selftest.cpp
+    src/erg/luagen.cpp src/erg/scene.cpp src/erg/names.cpp src/erg/jsonio.cpp
+    src/tools/json_read.cpp src/core/log.cpp)
+target_include_directories(erg_spawn_deal_selftest PRIVATE src src/sdk)
+target_compile_definitions(erg_spawn_deal_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(erg_spawn_deal_selftest PRIVATE /W4 /utf-8 /permissive-)
+target_link_libraries(erg_spawn_deal_selftest PRIVATE melange_xom lua50_ref)
 
 add_executable(sim_selftest EXCLUDE_FROM_ALL
     tests/sim_selftest.cpp

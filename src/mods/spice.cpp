@@ -502,14 +502,15 @@ bool ParseLevels(const json::Value& a, Manifest* out, std::vector<Error>* errs) 
         l.line = item.line;
         bool good = true;
         for (const auto& [key, m] : item.members) {
-            if (key == "slug" || key == "title" || key == "type" || key == "source" || key == "sim") {
-                const size_t max = key == "source" || key == "sim" ? 200 : key == "title" ? 40 : 24;
+            if (key == "slug" || key == "title" || key == "type" || key == "source" || key == "sim" || key == "timeOfDay" || key == "image") {
+                const size_t max = key == "source" || key == "sim" || key == "image" ? 200 : key == "title" ? 40 : 24;
                 if (!m.IsString() || m.string.empty() || m.string.size() > max) {
                     AddError(errs, &m, "levels", "levels." + key + " must be a string of 1-" + std::to_string(max) + " characters");
                     good = false;
                     continue;
                 }
-                (key == "slug" ? l.slug : key == "title" ? l.title : key == "type" ? l.type : key == "sim" ? l.sim : l.source) = m.string;
+                (key == "slug" ? l.slug : key == "title" ? l.title : key == "type" ? l.type : key == "sim" ? l.sim
+                 : key == "timeOfDay" ? l.timeOfDay : key == "image" ? l.image : l.source) = m.string;
             } else if (key == "chunk" || key == "survivor") {
                 if (!m.IsBool()) {
                     AddError(errs, &m, key == "chunk" ? "levels.chunk" : "levels.survivor", "levels." + key + " must be a boolean");

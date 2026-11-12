@@ -29,6 +29,7 @@
 #include "levels/probe.h"
 #include "melange/gamestate.h"
 #include "lua/sim/bridge_internal.h"
+#include "lua/sim/sim_worms.h"
 #include "melange/levels.h"
 #include "melange/sim.h"
 #include "mods/lobby.h"
@@ -49,6 +50,21 @@ unsigned g_sent = 0;
 int g_fire = -1;                  // a fire to start at the next tick (its count; -1 none); under g_mx
 std::vector<std::array<float, 6>> g_drops;   // mines to make at the next tick (pos, vel); under g_mx
 bool g_roundHeld = false;         // level.test.roundTime {hold: true}; under g_mx
+struct Place {
+    int slot;
+    float pos[3];
+    bool anchor, release;
+};
+std::vector<Place> g_places;      // level.test.placeWorm's moves for the next tick; under g_mx
+std::string g_placeLast;          // what the last tick's moves did
+struct LuaRun {
+    uint32_t tick;
+    bool ok;
+    std::string code, text;
+};
+std::deque<LuaRun> g_luaRuns;     // level.test.lua's last runs (8 kept); under g_mx
+std::deque<std::string> g_luaQueue;   // level.test.lua's code for the next tick; under g_mx
+unsigned g_luaSeq = 0;            // runs so far
 uint32_t g_heldTurn = UINT32_MAX; // the turn the round clock was last paused in (sim thread)
 unsigned g_pauses = 0;            // pauses sent while held
 
@@ -58,6 +74,8 @@ void OnState(levels::TestState s, const char* key, const char*, void*) {
     else if (s == TS::Ended || s == TS::Failed || s == TS::Idle) {
         g_playing.clear();
         std::lock_guard lk(g_mx);
+        g_luaQueue.clear();
+        g_places.clear();
         g_roundHeld = false;
     }
 }
@@ -96,6 +114,41 @@ void OnTick(uint32_t tick, void*) {
         ++g_sent;
         if (!r.ok) LOG_WARN("[erg] test: tick %u: %s", tick, r.text.c_str());
         else LOG_INFO("[erg] test: tick %u: %s", tick, code.c_str());
+    }
+    std::deque<std::string> lq;
+    std::vector<Place> places;
+    {
+        std::lock_guard lk(g_mx);
+        lq.swap(g_luaQueue);
+        places.swap(g_places);
+    }
+    // level.test.placeWorm: the worm data container's position written and its velocity zeroed (the worm anchor's own
+    // write), then the anchor set or let go
+    for (const Place& pl : places) {
+        std::string did;
+        simworms::Backend* b = simworms::GetBackend();
+        simworms::WormInfo w{};
+        const char* why = nullptr;
+        if (!b || !b->Read(pl.slot, &w)) did = "no worm in that slot (or the worm anchor is not installed)";
+        else if (!simworms::Alive(w)) did = "the worm is dead";
+        else {
+            const float zero[3] = {0, 0, 0};
+            if (pl.release && simworms::Anchored(pl.slot)) simworms::Anchor(pl.slot, false, &why);
+            if (!pl.release && !b->Write(pl.slot, pl.pos, zero, 0, 0)) did = "the write failed";
+            else if (pl.anchor && !simworms::Anchor(pl.slot, true, &why)) did = std::string("placed, not anchored: ") + (why ? why : "?");
+            else did = pl.release ? "released" : pl.anchor ? "placed and anchored" : "placed";
+        }
+        LOG_INFO("[erg] test: tick %u: worm %d %s (%.0f, %.0f, %.0f)", tick, pl.slot, did.c_str(), pl.pos[0], pl.pos[1], pl.pos[2]);
+        std::lock_guard lk(g_mx);
+        g_placeLast = "worm " + std::to_string(pl.slot) + ": " + did;
+    }
+    for (const std::string& code : lq) {
+        const sandbox::EvalOut r = simbridge::EvalMatch(code);
+        LOG_INFO("[erg] test: tick %u: lua %s: %.160s%s", tick, r.ok ? "ok" : "FAILED", code.c_str(), r.ok ? "" : (" -> " + r.text).c_str());
+        std::lock_guard lk(g_mx);
+        g_luaRuns.push_back({tick, r.ok, code.substr(0, 200), r.text.substr(0, 400)});
+        if (g_luaRuns.size() > 8) g_luaRuns.pop_front();
+        ++g_luaSeq;
     }
 }
 
@@ -352,6 +405,80 @@ void LandRayOp(const Call& c, Result& r, void*) {
     r.json = jsonmini::Obj().Raw("rays", out.End()).UInt("tick", sim::Tick()).End();
 }
 
+// level.test.placeWorm {worm, pos?: [x, y, z], anchor?, release?}: at the next sim tick the worm in that slot (0-15,
+// wum.game.worms()' slot) stands at pos (world units, its feet): its data container's position is written and its
+// velocity zeroed, as the worm anchor (wum.sim.worm(slot):anchor) writes its pin, so a tester parks a worm on a step,
+// a roof or a mesa without walking it there. anchor: true also anchors it there (it stays through blasts until
+// release: true, which lets the anchor go and moves nothing). Give pos a little over the ground: the worm settles. A
+// Test only, offline. `last` answers what the previous move did.
+void PlaceWorm(const Call& c, Result& r, void*) {
+    json::Value p;
+    if (!rpc::ParseParams(c, &p, r)) return;
+    double slot = -1;
+    bool anchor = false, release = false;
+    if (!Num(p, "worm", 0, simworms::kMaxWorms - 1, -1, &slot, r)) return;
+    if (const json::Value* v = p.Get("anchor"); v && !v->IsNull() && !rpc::Flag(p, "anchor", &anchor, r)) return;
+    if (const json::Value* v = p.Get("release"); v && !v->IsNull() && !rpc::Flag(p, "release", &release, r)) return;
+    const json::Value* pos = p.Get("pos");
+    Place pl{static_cast<int>(slot), {0, 0, 0}, anchor, release};
+    if (slot < 0 || slot != static_cast<int>(slot)) {
+        std::lock_guard lk(g_mx);
+        r.json = jsonmini::Obj().Bool("queued", false).Str("last", g_placeLast).UInt("tick", sim::Tick()).End();
+        return;
+    }
+    if (!release) {
+        bool ok = pos && pos->IsArray() && pos->items.size() == 3;
+        for (size_t k = 0; ok && k < 3; ++k) {
+            const json::Value& n = pos->items[k];
+            ok = n.IsNumber() && std::isfinite(n.number) && std::fabs(n.number) <= 100000;
+            if (ok) pl.pos[k] = static_cast<float>(n.number);
+        }
+        if (!ok) {
+            Fail(r, rpc::kBadParams, "pos: [x, y, z] in world units (or release: true)");
+            return;
+        }
+    }
+    if (!Ready(r)) return;
+    {
+        std::lock_guard lk(g_mx);
+        g_places.push_back(pl);
+    }
+    r.json = jsonmini::Obj().Bool("queued", true).Int("worm", pl.slot).UInt("tick", sim::Tick()).End();
+}
+
+// level.test.lua {code?}: engine Lua for the match VM, run at the next sim tick as the other hooks' code is (the engine
+// handles its messages in the deterministic phase), for a test tool's harness moves that have no hook of their own: a
+// team's inventory (EditContainer("Inventory.Team00")), a worm put on a knot (worm.Spawn and Worm.Respawn), an air
+// strike on a detail (GameLogic.CreateAirstrike), a girder placed. A Test only, offline (Ready). Answers `seq`, the
+// runs so far, and `runs`, the last eight with each one's tick, ok and text (an error's message, or what a chunk that
+// starts with return gave); with no code it only answers those.
+void LuaOp(const Call& c, Result& r, void*) {
+    json::Value p;
+    if (!rpc::ParseParams(c, &p, r)) return;
+    const json::Value* code = p.Get("code");
+    if (code && !code->IsNull()) {
+        if (!code->IsString() || code->string.empty() || code->string.size() > 8000) {
+            Fail(r, rpc::kBadParams, "code: engine Lua, 1-8000 characters");
+            return;
+        }
+        if (!Ready(r)) return;
+        std::lock_guard lk(g_mx);
+        g_luaQueue.push_back(code->string);
+    }
+    jsonmini::Arr runs;
+    unsigned seq = 0;
+    size_t pending = 0;
+    {
+        std::lock_guard lk(g_mx);
+        for (const LuaRun& x : g_luaRuns)
+            runs.Raw(jsonmini::Obj().UInt("tick", x.tick).Bool("ok", x.ok).Str("code", x.code).Str("text", x.text).End());
+        seq = g_luaSeq;
+        pending = g_luaQueue.size();
+    }
+    r.json = jsonmini::Obj().Bool("queued", code && !code->IsNull()).UInt("seq", seq).UInt("pending", static_cast<unsigned>(pending))
+                 .Raw("runs", runs.End()).UInt("tick", sim::Tick()).End();
+}
+
 // level.test.roundTime {hold: bool}: hold pauses the round clock now and again at each turn start until the Test ends
 // (or hold: false, which resumes it), so the scheme's sudden death never comes; the turn clock runs as before.
 void RoundTime(const Call& c, Result& r, void*) {
@@ -390,5 +517,7 @@ void InstallLevelTestOps() {
     AddMethod("level.test.landRay", &LandRayOp, nullptr, kRpcGameOnly);
     AddMethod("level.test.probe", &Probe, nullptr, kRpcGameOnly);
     AddMethod("level.test.roundTime", &RoundTime, nullptr, kRpcMutating | kRpcGameOnly);
+    AddMethod("level.test.lua", &LuaOp, nullptr, kRpcMutating | kRpcGameOnly);
+    AddMethod("level.test.placeWorm", &PlaceWorm, nullptr, kRpcMutating | kRpcGameOnly);
 }
 }  // namespace melange::oasis::providers

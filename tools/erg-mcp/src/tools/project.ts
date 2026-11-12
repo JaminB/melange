@@ -4,8 +4,15 @@ import { grids, limitProblems, tidy, toWorld, usage } from "../lib/voxel";
 import { ToolError, type Tool } from "../registry";
 import type { Session } from "../session";
 import { currentHash, factoryReport, spawnTreadWarnings } from "./place";
+import { minorPits, pitWarnings } from "./inspect";
+import { waterShaderMods } from "./place";
+import { readSea, readWaterLook, shaderOverrideWarnings } from "../lib/water-look";
 import { backdropOf, coverLevel, waterBackdropWarning } from "../lib/backdrop";
-import { drapePokes, pokeLines } from "../lib/drape-pokes";
+import { drapePokes, onSkinBlocks, pokeLines } from "../lib/drape-pokes";
+import { landBounds } from "../lib/height-line";
+import { gameBuild } from "../lib/game-build";
+import { ERG_FEATURES, lackWarning, versionOf } from "../lib/ship-gate";
+import { projectLacks } from "../lib/ship-gate-export";
 
 const discard = { type: "boolean", description: "Drop unsaved edits of the open project instead of refusing." } as const;
 
@@ -73,6 +80,8 @@ export function describe(s: Session, q: FrameQuery = {}) {
   for (const d of scene.details) roles[d.role] = (roles[d.role] ?? 0) + 1;
   const knotOf = new Map(scene.details.filter((d) => d.src === null).map((d) => [d.name, d]));
   const water = scene.water.level;
+  const lb = landBounds(grids(store));
+  const r2 = (v: number) => Math.round(v * 100) / 100, both = (m: number) => ({ map: r2(m), world: r2(m * WORLD_PER_XAN) });
   return {
     project: { id: info.id, title: scene.title, stem: scene.stem, base: scene.base.key, source: scene.base.source, file: scene.base.file },
     ...state(s),
@@ -82,6 +91,8 @@ export function describe(s: Session, q: FrameQuery = {}) {
     water: { world: water, map: water === null ? null : water / WORLD_PER_XAN, note: water === null ? "the level's own water height" : undefined },
     spawnMode: scene.spawns.mode, surround: scene.hmp.mode, survivor: !!scene.kind?.survivor, script: !!scene.script?.present,
     extent: voxelFrames.length ? { map: { min: tidy(extent.min), max: tidy(extent.max) }, world: { min: tidy(toWorld(extent.min)), max: tidy(toWorld(extent.max)) } } : null,
+    // the engine's landscape box (what wum.sim.land() reads) and the frame that sets each end: check_height_line's input
+    landBounds: lb ? { minY: both(lb.minY), maxY: both(lb.maxY), minFrame: { id: lb.minFrame, name: lb.minFrameName }, maxFrame: { id: lb.maxFrame, name: lb.maxFrameName }, emptyFramesSkipped: lb.emptySkipped } : null,
     voxelFrames: { total: voxelFrames.length, matching: listed.length, listed: Math.min(limit, listed.length),
       solid: voxelFrames.reduce((n, f) => n + f.solid, 0), order: "largest first" },
     frames: listed.slice(0, limit),
@@ -108,10 +119,10 @@ export function describe(s: Session, q: FrameQuery = {}) {
 
 /** The undraped added blocks that poke out of a draped skin (lib/drape-pokes), as a `drape` field with the lines, or
  * nothing. A failing read (a frame with no voxels) is no warning. */
-function pokeReport(store: EditorStore): { drape?: { pokes: ReturnType<typeof drapePokes>; warnings: string[] } } {
+function pokeReport(store: EditorStore): { drape?: { pokes: ReturnType<typeof drapePokes>; warnings: string[]; onSkinBlocks?: number } } {
   try {
-    const pokes = drapePokes(grids(store));
-    return pokes.length ? { drape: { pokes: pokes.map((p) => ({ ...p, maxOver: Math.round(p.maxOver * 100) / 100, at: p.at.map((v) => Math.round(v * 100) / 100) as [number, number], blockTop: Math.round(p.blockTop * 100) / 100, skinTop: Math.round(p.skinTop * 100) / 100 })), warnings: pokeLines(pokes) } } : {};
+    const gs = grids(store), pokes = drapePokes(gs), tagged = onSkinBlocks(gs);
+    return pokes.length ? { drape: { ...(tagged ? { onSkinBlocks: tagged } : {}), pokes: pokes.map((p) => ({ ...p, maxOver: Math.round(p.maxOver * 100) / 100, at: p.at.map((v) => Math.round(v * 100) / 100) as [number, number], blockTop: Math.round(p.blockTop * 100) / 100, skinTop: Math.round(p.skinTop * 100) / 100 })), warnings: pokeLines(pokes) } } : {};
   } catch {
     return {};
   }
@@ -136,7 +147,15 @@ export const tools: Tool[] = [
       // a served Melange.exe is the game folder's own unless MELANGE_EXE names another: often older than this erg-mcp
       const warnings = c.via.startsWith("Melange.exe --serve") && !process.env.MELANGE_EXE
         ? ["MELANGE_EXE is unset, so the game folder's own Melange.exe serves: when it is older than this erg-mcp it refuses newer project formats (open_project of a team-spawn project fails with spawns.mode: must be \"random\" or \"knots\"); set MELANGE_EXE to the Melange.exe built with this erg-mcp"] : [];
-      return { connected: true, via: c.via, url: masked(c.url), server: c.server, ...(c.build ? { build: c.build } : {}), ...(warnings.length ? { warnings } : {}), ergMethods: c.methods.filter((m) => m.startsWith("level")),
+      // an old Melange found here, not at the first save, build or Test that trips over it: the server's own version,
+      // and the build of the game folder a Test or an installed level would run in (MELANGE_GAME_DIR, or gameDir)
+      const fix = "set MELANGE_EXE to the Melange.exe built with this erg-mcp (and put that build's melange.asi in the test game)";
+      const sw = lackWarning("the server", c.build, ERG_FEATURES);
+      if (sw) warnings.push(`${sw}. ${fix}`);
+      const game = gameBuild(a.gameDir ?? process.env.MELANGE_GAME_DIR);
+      const gw = game ? lackWarning(`the game's melange.asi in ${game.dir}`, game.version, ERG_FEATURES) : null;
+      if (gw) warnings.push(`${gw}: a Test or an installed level there runs that build`);
+      return { connected: true, via: c.via, url: masked(c.url), server: c.server, ...(c.build ? { build: c.build } : {}), ...(game ? { gameBuild: game } : {}), ...(warnings.length ? { warnings } : {}), ergMethods: c.methods.filter((m) => m.startsWith("level")),
         test: c.methods.includes("level.test") ? "level.test is available (the game is running)" : "no level.test: start the game for Test",
         ...(dir ? { projectsDir: dir, projectsNote: PROJECTS_NOTE } : {}) };
     },
@@ -209,14 +228,21 @@ export const tools: Tool[] = [
       const t0 = Date.now();
       await s.open(a.id, a.discard);
       const d = describe(s, { limit: 0 });
-      return { opened: a.id, ms: Date.now() - t0, project: d.project, theme: d.theme, timeOfDay: d.timeOfDay, water: d.water,
+      // what the project uses that the connected server, or the game a Test would run in, is too old for
+      const build = s.conn?.build, game = gameBuild(process.env.MELANGE_GAME_DIR);
+      const needs = projectLacks(s.store, build), gameNeeds = game ? projectLacks(s.store, game.version) : [];
+      const older = [
+        ...(needs.length ? [`the server (Melange ${versionOf(build)}) is older than this project needs: ${needs.map((n) => `${n.feature} (${n.melange})`).join("; ")}: a save, build or export here can fail or write a pack it cannot load`] : []),
+        ...(gameNeeds.length ? [`the game's melange.asi in ${game!.dir} (Melange ${game!.version}) is older than this project needs: ${gameNeeds.map((n) => `${n.feature} (${n.melange})`).join("; ")}: a Test or the installed level there fails to load`] : []),
+      ];
+      return { opened: a.id, ms: Date.now() - t0, ...(older.length ? { warnings: older } : {}), project: d.project, theme: d.theme, timeOfDay: d.timeOfDay, water: d.water,
         voxelFrames: d.voxelFrames.total, extent: d.extent, spawns: d.spawns.length, objects: d.objects.length, details: d.details.total, problems: d.problems,
         next: "describe_level for frames, bounds and limits" };
     },
   },
   {
     name: "describe_level",
-    description: "The open project: voxel frames, largest first (id, size, position and bounds in map and world units, solid count), the level's extent, spawns, objects, water, theme, time of day, usage against the patch limits (64 added blocks of at most 31 voxels a side, 2000 runs per frame, 20000 ops, 4 MB, 256 objects), the game's voxel cell budget (limits.voxelCells: X*Y*Z of every voxel frame, at most 65535, with cells used and free) and engineWarnings.",
+    description: "The open project: voxel frames, largest first (id, size, position and bounds in map and world units, solid count), the level's extent, `landBounds` (the engine's landscape box: min and max y in map and world units and the frame setting each end; voxel frames with no solid voxel, such as base frames emptied by remove_base_frames, are left out and counted in emptyFramesSkipped), spawns, objects, water, theme, time of day, usage against the patch limits (64 added blocks of at most 31 voxels a side, 2000 runs per frame, 20000 ops, 4 MB, 256 objects), the game's voxel cell budget (limits.voxelCells: X*Y*Z of every voxel frame, at most 65535, with cells used and free) and engineWarnings.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -249,9 +275,17 @@ export const tools: Tool[] = [
       const sea = await waterBackdropWarning(s).catch(() => null);
       // spawn knots a worm cannot stand on (in solid, no ground near under it, on an edge): saved all the same, and said so
       const spawns = (() => { try { return spawnTreadWarnings(s.store); } catch { return [] as string[]; } })();
+      // pits a worm cannot walk out of (check_pits with its defaults): advisory
+      const pits = pitWarnings(s.store), pitsMinor = minorPits(s.store);
+      // a water look (set_water_look) that an enabled water shader mod of the game folder does not draw: advisory
+      const waterLook = await (async () => {
+        const script = (await s.requireProject().erg.script()) ?? "";
+        const look = readWaterLook(script), sea = readSea(script);
+        return look || sea ? shaderOverrideWarnings(waterShaderMods(process.env.MELANGE_GAME_DIR), look, sea) : [];
+      })().catch(() => [] as string[]);
       // the hash test {expectHash} checks the game's project against (the patch and the script, not the stem or title)
       const projectHash = await currentHash(s).catch(() => undefined);
-      return { ...r, ...(projectHash ? { projectHash } : {}), ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...pokeReport(s.store), ...state(s), patchBytes: usage(s.store).patchBytes.used };
+      return { ...r, ...(projectHash ? { projectHash } : {}), ...(factory.length ? { factory } : {}), ...(sea?.warning ? { water: sea } : {}), ...(spawns.length ? { spawns } : {}), ...(pits.length ? { pits } : {}), ...(pitsMinor ? { pitsMinor } : {}), ...(waterLook.length ? { waterLook } : {}), ...pokeReport(s.store), ...state(s), patchBytes: usage(s.store).patchBytes.used };
     },
   },
   {

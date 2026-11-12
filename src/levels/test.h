@@ -72,8 +72,20 @@ struct TodApplied {
     bool applied = false;
 };
 TodApplied LastTod();
+void PinTod(const char* key, const std::string& tod);   // a pack level's levels[].timeOfDay, at its level set-up
 // Worms per team for the Test of `key` (0: the Quick Game's own count, four): written into GM.GameInitData's
 // T1..T4_NumOfWorms when the override is taken and again when the match VM is created, before the level's Initialise
 // sets the worms up (lib_SetupMultiplayerWormsAndTeams). An empty key clears it.
 void SetTeamWorms(const std::string& key, const std::array<uint8_t, 4>& worms);
+// The game style for the Test of `key`: `lua` (engine Lua: an EditContainer of GM.SchemeData that sets the style's Name
+// and plain fields) runs in the match VM when it is created, after the frontend has copied the Quick Game's own style
+// into GM.SchemeData and before the level's Initialise reads it, so a mod that keys on the style (wum.sim.scheme():
+// Sandtide's Sandworms) plays in a Test as it does from the Game Style list. `name` is what it sets, for the report. An
+// empty key clears it.
+void SetScheme(const std::string& key, const std::string& name, const std::string& lua);
+struct SchemeApplied {
+    std::string key, name, error;   // error: the match VM's message when the chunk failed
+    bool applied = false;
+};
+SchemeApplied LastScheme();
 }  // namespace melange::levels::test

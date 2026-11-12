@@ -1,5 +1,6 @@
 #include "erg/luagen.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -13,6 +14,10 @@ constexpr std::string_view kKnotLine = "worm.Spawn = \"WORM\" .. i\n";
 // Game on 2026-11-08), so a worm's place in its team is how many of its team's worms came before it.
 constexpr std::string_view kTeamTest = "if worm.Active and worm.TeamIndex < 4 then\n";
 constexpr std::string_view kTeamLine = "if p < 4 then worm.Spawn = \"WORM\" .. (worm.TeamIndex * 4 + p) end\n";
+// Area spawns: Melange's ergSpawnDeal answers each team rank's area (1-based) from the match's seed; without it (no
+// Melange hook) the chunk's own fixed deal. The rank is the team's place among the match's teams in TeamIndex order.
+constexpr std::string_view kDealCall = "local deal = ergSpawnDeal and ergSpawnDeal(\"";
+constexpr std::string_view kAreaLine = "if a and p < areaCount[a] then worm.Spawn = \"WORM\" .. (areaFirst[a] + p) end\n";
 constexpr std::string_view kPlaceLine = "SendMessage(\"GameLogic.PlaceObjects\")\n";
 // The level's factory replaces the scheme's: stdvs reads MineFactoryOn after this setup to send CreateRandMineFactory,
 // and a second factory trips the engine's one-factory assert. GM.SchemeData is the match's copy of the scheme, which
@@ -217,6 +222,10 @@ ChunkSpec SpecOf(const Scene& s) {
     ChunkSpec c;
     c.knots = s.spawns == SpawnMode::Knots;
     c.teams = s.spawns == SpawnMode::Teams;
+    if (s.spawns == SpawnMode::Areas) {
+        c.areas = s.spawnAreas;
+        for (auto& a : c.areas->areas) a.name.clear();
+    }
     c.placeObjects = HasNamedDetail(s, "mine") || HasNamedDetail(s, "oildrum");
     c.objects = s.objects;
     c.water = s.water;
@@ -225,7 +234,127 @@ ChunkSpec SpecOf(const Scene& s) {
 
 bool Needed(const Scene& s) {
     const ChunkSpec c = SpecOf(s);
-    return c.knots || c.teams || c.placeObjects || !c.objects.empty() || c.water.has_value();
+    return c.knots || c.teams || c.areas || c.placeObjects || !c.objects.empty() || c.water.has_value();
+}
+
+std::string AreasSpec(const SpawnAreas& a) {
+    std::string s;
+    for (size_t i = 0; i < a.areas.size(); ++i) s += (i ? "/" : "") + a.areas[i].group + ":" + std::to_string(a.areas[i].knots);
+    s += ";";
+    for (size_t i = 0; i < a.pattern.size(); ++i) s += (i ? "/" : "") + a.pattern[i].group + (a.pattern[i].opposite ? ":opposite" : "");
+    s += ";";
+    for (size_t i = 0; i < a.opposite.size(); ++i) s += (i ? "/" : "") + std::to_string(a.opposite[i][0]) + "-" + std::to_string(a.opposite[i][1]);
+    return s;
+}
+
+namespace {
+// Splits on `sep`; an empty text is no parts.
+std::vector<std::string_view> Split(std::string_view s, char sep) {
+    std::vector<std::string_view> out;
+    if (s.empty()) return out;
+    size_t i = 0;
+    while (true) {
+        const size_t j = s.find(sep, i);
+        out.push_back(s.substr(i, j == std::string_view::npos ? std::string_view::npos : j - i));
+        if (j == std::string_view::npos) return out;
+        i = j + 1;
+    }
+}
+
+bool SmallInt(std::string_view s, int* out) { return s.size() <= 2 && IntArg(s, out); }
+}  // namespace
+
+bool ParseAreasSpec(std::string_view spec, SpawnAreas* out) {
+    if (spec.size() > 512) return false;
+    const auto parts = Split(spec, ';');
+    if (parts.size() != 3) return false;
+    SpawnAreas a;
+    for (auto e : Split(parts[0], '/')) {
+        const size_t c = e.find(':');
+        SpawnArea ar;
+        if (c == std::string_view::npos || !SmallInt(e.substr(c + 1), &ar.knots)) return false;
+        ar.group = std::string(e.substr(0, c));
+        ar.name = "area" + std::to_string(a.areas.size());   // for the validator only
+        a.areas.push_back(std::move(ar));
+        if (a.areas.size() > kMaxSpawnAreas) return false;
+    }
+    for (auto e : Split(parts[1], '/')) {
+        DealStep st;
+        constexpr std::string_view kOpp = ":opposite";
+        if (e.ends_with(kOpp)) st.opposite = true, e.remove_suffix(kOpp.size());
+        st.group = std::string(e);
+        a.pattern.push_back(std::move(st));
+        if (a.pattern.size() > kMaxDealSteps) return false;
+    }
+    for (auto e : Split(parts[2], '/')) {
+        const size_t d = e.find('-');
+        std::array<int, 2> pr{};
+        if (d == std::string_view::npos || !SmallInt(e.substr(0, d), &pr[0]) || !SmallInt(e.substr(d + 1), &pr[1])) return false;
+        a.opposite.push_back(pr);
+        if (a.opposite.size() > kMaxSpawnAreas) return false;
+    }
+    if (!ValidateSpawnAreas(a, nullptr) || AreasSpec(a) != spec) return false;
+    for (auto& ar : a.areas) ar.name.clear();
+    *out = std::move(a);
+    return true;
+}
+
+std::vector<int> DealAreas(const SpawnAreas& a, int teams, std::optional<uint32_t> seed) {
+    // xorshift32 over the seed (never 0); draws only where a choice is open, so a fixed map deals alike everywhere
+    uint32_t x = (seed ? *seed : 0u) ^ 0x9E3779B9u;
+    if (!x) x = 1;
+    auto pick = [&](size_t k) -> size_t {
+        if (k <= 1 || !seed) return 0;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        return x % k;
+    };
+    const size_t n = a.areas.size();
+    std::vector<bool> used(n, false);
+    std::vector<int> dealt;
+    auto partner = [&](int i) {
+        for (const auto& [p, q] : a.opposite) {
+            if (p == i) return q;
+            if (q == i) return p;
+        }
+        return -1;
+    };
+    for (const auto& st : a.pattern) {
+        std::vector<int> cand;
+        for (size_t i = 0; i < n; ++i)
+            if (!used[i] && a.areas[i].group == st.group) cand.push_back(static_cast<int>(i));
+        if (cand.empty()) continue;
+        int chosen = -1;
+        if (st.opposite)
+            for (int d : dealt) {   // the partner of the earliest dealt area that has an unused one in the group
+                const int q = partner(d);
+                if (q >= 0 && std::find(cand.begin(), cand.end(), q) != cand.end()) {
+                    chosen = q;
+                    break;
+                }
+            }
+        if (chosen < 0) chosen = cand[pick(cand.size())];
+        used[chosen] = true;
+        dealt.push_back(chosen);
+    }
+    std::vector<int> rest;
+    for (size_t i = 0; i < n; ++i)
+        if (!used[i]) rest.push_back(static_cast<int>(i));
+    while (!rest.empty()) {
+        const size_t k = pick(rest.size());
+        dealt.push_back(rest[k]);
+        rest.erase(rest.begin() + static_cast<std::ptrdiff_t>(k));
+    }
+    // the teams shuffled over the dealt areas (Fisher-Yates over the ranks)
+    const int t = std::max(0, teams);
+    std::vector<int> order(t);
+    for (int i = 0; i < t; ++i) order[i] = i;
+    if (seed)
+        for (int i = t - 1; i > 0; --i) std::swap(order[i], order[pick(static_cast<size_t>(i) + 1)]);
+    std::vector<int> out(t, -1);
+    for (int j = 0; j < t; ++j) out[order[j]] = j < static_cast<int>(dealt.size()) ? dealt[j] : -1;
+    return out;
 }
 
 std::string Chunk(const Scene& s) {
@@ -416,9 +545,54 @@ bool ParseFactoryTweak(std::string_view text, FactorySpec* f) {
     return true;
 }
 
+// The area deal's lines (spawns.mode areas): rank the match's teams, ask for the deal, put each worm on its area's knots.
+void AreaLines(const SpawnAreas& a, const std::string& in, std::string* out) {
+    std::string first, count, fallback;
+    for (size_t i = 0; i < a.areas.size(); ++i) {
+        first += (i ? ", " : "") + std::to_string(a.First(i));
+        count += (i ? ", " : "") + std::to_string(a.areas[i].knots);
+    }
+    const std::vector<int> fixed = DealAreas(a, static_cast<int>(a.areas.size()), std::nullopt);
+    for (size_t i = 0; i < fixed.size(); ++i) fallback += (i ? ", " : "") + std::to_string(fixed[i] + 1);
+    std::string& o = *out;
+    o += in + "local areaFirst, areaCount = {" + first + "}, {" + count + "}\n";
+    o += in + "local present, rank, n = {}, {}, 0\n";
+    o += in + "for i = 0, 15 do\n";
+    o += in + "    local lock, worm = EditContainer(lib_GetWormContainerName(i))\n";
+    o += in + "    if worm.Active then present[worm.TeamIndex + 1] = true end\n";
+    o += in + "    CloseContainer(lock)\n";
+    o += in + "end\n";
+    o += in + "for t = 1, 16 do\n";
+    o += in + "    if present[t] then\n";
+    o += in + "        n = n + 1\n";
+    o += in + "        rank[t] = n\n";
+    o += in + "    end\n";
+    o += in + "end\n";
+    o += in + std::string(kDealCall) + AreasSpec(a) + "\", n) or {" + fallback + "}\n";
+    o += in + "local placed = {}\n";
+    o += in + "for i = 0, 15 do\n";
+    o += in + "    local lock, worm = EditContainer(lib_GetWormContainerName(i))\n";
+    o += in + "    if worm.Active then\n";
+    o += in + "        local r = rank[worm.TeamIndex + 1]\n";
+    o += in + "        local a, p = deal[r], placed[r] or 0\n";
+    o += in + "        placed[r] = p + 1\n";
+    o += in + "        " + std::string(kAreaLine);
+    o += in + "    end\n";
+    o += in + "    CloseContainer(lock)\n";
+    o += in + "end\n";
+}
+
 std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
-    if (!c.knots && !c.teams && !c.placeObjects && c.objects.empty() && !c.water) return {};
-    if (c.knots && c.teams) return {};
+    if (!c.knots && !c.teams && !c.areas && !c.placeObjects && c.objects.empty() && !c.water) return {};
+    if (c.knots + c.teams + c.areas.has_value() > 1) return {};
+    if (c.areas) {
+        // the chunk carries no names: validate a copy with placeholder names
+        SpawnAreas v = *c.areas;
+        for (size_t i = 0; i < v.areas.size(); ++i)
+            if (!v.areas[i].name.empty()) return {};
+            else v.areas[i].name = "area" + std::to_string(i);
+        if (!ValidateSpawnAreas(v, nullptr)) return {};
+    }
     bool crates = false, triggers = false;
     int factories = 0;
     const FactorySpec* factory = nullptr;
@@ -432,7 +606,7 @@ std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
     std::string out = Header(stem);
     if (factory && (factory->Tweaks() || factory->keepKnot || factory->Launch())) out += FactoryTweakLine(*factory);
     if (c.water) out += std::string(kWater) + Num(*c.water) + ")\n";
-    if (c.knots || c.teams || c.placeObjects || !c.objects.empty()) {
+    if (c.knots || c.teams || c.areas || c.placeObjects || !c.objects.empty()) {
         if (crates) out += kCrateFn;
         if (triggers) out += kTriggerFn;
         out += deferred ? kDeferredOpen : kLegacyOpen;
@@ -457,6 +631,7 @@ std::string Emit(std::string_view stem, const ChunkSpec& c, bool deferred) {
             out += in + "    CloseContainer(lock)\n";
             out += in + "end\n";
         }
+        if (c.areas) AreaLines(*c.areas, in, &out);
         if (factory) {
             out += in + std::string(kFactoryLines[0]) + in + std::string(kFactoryLines[1]);
             if (!factory->schemeMines) out += in + std::string(kNoMinesLine);
@@ -499,6 +674,12 @@ bool Parse(std::string_view stem, std::string_view text, ChunkSpec* out) {
     c.knots = text.find(kKnotLine) != std::string_view::npos;
     c.teams = text.find(kTeamLine) != std::string_view::npos;
     c.placeObjects = text.find(kPlaceLine) != std::string_view::npos;
+    if (const size_t at = text.find(kDealCall); at != std::string_view::npos) {
+        const size_t start = at + kDealCall.size(), end = text.find('"', start);
+        SpawnAreas a;
+        if (end == std::string_view::npos || !ParseAreasSpec(text.substr(start, end - start), &a)) return false;
+        c.areas = std::move(a);
+    }
     if (text.find(kFactoryLines[1]) != std::string_view::npos) {
         ObjectSpec f;
         f.type = ObjectType::MineFactory;

@@ -188,6 +188,102 @@ bool OnlyKeys(const Json& o, std::initializer_list<std::string_view> keys, const
     return true;
 }
 
+bool ParseSpawns(const Json* o, SpawnMode* mode, SpawnAreas* areas, std::string* err) {
+    std::string m;
+    if (!Obj(o, "spawns", err) || !OnlyKeys(*o, {"mode", "areas", "pattern", "opposite"}, "spawns", err) ||
+        !GetString(*o, "mode", "spawns", &m, err))
+        return false;
+    if (!ParseSpawnMode(m, mode)) return Fail(err, "spawns.mode", "must be \"random\", \"knots\", \"teams\" or \"areas\"");
+    *areas = {};
+    if (*mode != SpawnMode::Areas) {
+        for (const char* k : {"areas", "pattern", "opposite"})
+            if (o->find(k)) return Fail(err, std::string("spawns.") + k, "is only for spawns.mode \"areas\"");
+        return true;
+    }
+    const Json* arr = o->find("areas");
+    if (!arr || arr->kind != Json::Kind::Array || arr->arr.size() > kMaxSpawnAreas)
+        return Fail(err, "spawns.areas", "must be an array of 1-" + std::to_string(kMaxSpawnAreas) + " areas");
+    for (size_t i = 0; i < arr->arr.size(); ++i) {
+        const std::string p = "spawns.areas[" + std::to_string(i) + "]";
+        const Json& a = arr->arr[i];
+        SpawnArea ar;
+        int64_t knots = 0;
+        if (!Obj(&a, p, err) || !OnlyKeys(a, {"name", "group", "knots"}, p, err) || !GetString(a, "name", p, &ar.name, err) ||
+            !GetString(a, "group", p, &ar.group, err) || !GetInt(a, "knots", p, 1, kMaxAreaKnots, &knots, err))
+            return false;
+        ar.knots = static_cast<int>(knots);
+        areas->areas.push_back(std::move(ar));
+    }
+    if (const Json* pat = o->find("pattern")) {
+        if (pat->kind != Json::Kind::Array || pat->arr.size() > kMaxDealSteps)
+            return Fail(err, "spawns.pattern", "must be an array of at most " + std::to_string(kMaxDealSteps) + " steps");
+        for (size_t i = 0; i < pat->arr.size(); ++i) {
+            const Json& v = pat->arr[i];
+            const std::string p = "spawns.pattern[" + std::to_string(i) + "]";
+            if (v.kind != Json::Kind::String) return Fail(err, p, "must be a string");
+            DealStep st;
+            std::string_view g = v.str;
+            constexpr std::string_view kOpp = ":opposite";
+            if (g.size() > kOpp.size() && g.ends_with(kOpp)) {
+                st.opposite = true;
+                g.remove_suffix(kOpp.size());
+            }
+            if (!ValidGroupName(g)) return Fail(err, p, "must be \"<group>\" or \"<group>:opposite\"");
+            st.group = std::string(g);
+            areas->pattern.push_back(std::move(st));
+        }
+    }
+    if (const Json* opp = o->find("opposite")) {
+        if (opp->kind != Json::Kind::Array || opp->arr.size() > kMaxSpawnAreas)
+            return Fail(err, "spawns.opposite", "must be an array of at most " + std::to_string(kMaxSpawnAreas) + " pairs");
+        for (size_t i = 0; i < opp->arr.size(); ++i) {
+            const Json& v = opp->arr[i];
+            const std::string p = "spawns.opposite[" + std::to_string(i) + "]";
+            if (v.kind != Json::Kind::Array || v.arr.size() != 2) return Fail(err, p, "must be [a, b], two area indexes");
+            std::array<int, 2> pair{};
+            for (int k = 0; k < 2; ++k) {
+                bool ok = false;
+                const int64_t n = v.arr[k].kind == Json::Kind::Number ? v.arr[k].asInt64(&ok) : -1;
+                if (!ok || n < 0 || n >= static_cast<int64_t>(kMaxSpawnAreas)) return Fail(err, p, "must be [a, b], two area indexes");
+                pair[k] = static_cast<int>(n);
+            }
+            areas->opposite.push_back(pair);
+        }
+    }
+    return ValidateSpawnAreas(*areas, err);
+}
+
+Json SpawnsJson(SpawnMode mode, const SpawnAreas& areas) {
+    Json sp = Json::Obj();
+    sp.set("mode", Str(SpawnModeName(mode)));
+    if (mode != SpawnMode::Areas) return sp;
+    Json arr = Json::Arr();
+    for (const auto& a : areas.areas) {
+        Json o = Json::Obj();
+        o.set("name", Str(a.name));
+        o.set("group", Str(a.group));
+        o.set("knots", Int(a.knots));
+        arr.arr.push_back(std::move(o));
+    }
+    sp.set("areas", std::move(arr));
+    if (!areas.pattern.empty()) {
+        Json pat = Json::Arr();
+        for (const auto& st : areas.pattern) pat.arr.push_back(Str(st.opposite ? st.group + ":opposite" : st.group));
+        sp.set("pattern", std::move(pat));
+    }
+    if (!areas.opposite.empty()) {
+        Json opp = Json::Arr();
+        for (const auto& [x, y] : areas.opposite) {
+            Json pr = Json::Arr();
+            pr.arr.push_back(Int(x));
+            pr.arr.push_back(Int(y));
+            opp.arr.push_back(std::move(pr));
+        }
+        sp.set("opposite", std::move(opp));
+    }
+    return sp;
+}
+
 bool IsHex64(std::string_view s) {
     if (s.size() != 64) return false;
     for (char c : s)

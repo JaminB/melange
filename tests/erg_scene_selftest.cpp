@@ -441,6 +441,27 @@ void TestManifest() {
     errs.clear();
     Expect(lm::Parse(Mod("maps", {L{"a", "A", "survivor", "", false, 0}}), &errs).empty(), "type survivor is refused");
     errs.clear();
+    {
+        // levels[].timeOfDay and levels[].image (Melange 0.15)
+        L look{"a", "A", "multi", "", false, 0};
+        look.timeOfDay = "NIGHT";
+        look.image = "thumb/a.png";
+        auto ok = lm::Parse(Mod("maps", {look}), &errs);
+        Expect(ok.size() == 1 && ok[0].timeOfDay == "NIGHT" && ok[0].image == "thumb/a.png" && errs.empty(), "timeOfDay and image parse");
+        look.timeOfDay = "level";
+        Expect(lm::Parse(Mod("maps", {look}), &errs).size() == 1, "timeOfDay level is accepted");
+        look.timeOfDay = "night";
+        Expect(lm::Parse(Mod("maps", {look}), &errs).empty() && !errs.empty(), "a timeOfDay in lower case is refused");
+        errs.clear();
+        look.timeOfDay = "";
+        for (const char* bad : {"../a.png", "thumb/a.tga", "C:/a.png", "/a.png", "thumb\\a.png", ".png"}) {
+            look.image = bad;
+            Expect(lm::Parse(Mod("maps", {look}), &errs).empty(), std::string("image ") + bad + " is refused");
+            errs.clear();
+        }
+        Expect(lm::ValidTimeOfDay("") && lm::ValidTimeOfDay("EVENING") && !lm::ValidTimeOfDay("Day") && lm::ValidImagePath("a/b/c.PNG"),
+               "the validators");
+    }
     Expect(lm::Parse(Mod("maps", {L{"a", "A", "multi", "", false, 0}, L{"a", "B", "multi", "", false, 0}}), &errs).empty(),
            "a duplicate slug is refused");
     errs.clear();
@@ -788,6 +809,14 @@ std::vector<luagen::ChunkSpec> ChunkBranches() {
     teamsAll.placeObjects = true;
     teamsAll.water = 30;
     out.push_back(teamsAll);
+    luagen::ChunkSpec areas = noMines;   // spawns.mode areas: each team on the area the match deals it
+    areas.areas = erg::SpawnAreas{};
+    areas.areas->areas = {{"", "sand", 4}, {"", "sand", 3}, {"", "keep", 2}};
+    areas.areas->pattern = {{"sand", false}, {"sand", true}, {"keep", false}};
+    areas.areas->opposite = {{0, 1}};
+    areas.placeObjects = true;
+    areas.water = 30;
+    out.push_back(areas);
     all.objects.insert(all.objects.begin() + 2, factory);
     out.push_back(all);
     luagen::ChunkSpec max;
@@ -840,7 +869,7 @@ void TestChunkGrammar() {
     for (const auto& c : ChunkBranches()) {
         const std::string t = luagen::Text(stem, c), old = luagen::LegacyText(stem, c);
         std::string run;
-        const bool needsWrap = c.knots || c.teams || c.placeObjects || !c.objects.empty();
+        const bool needsWrap = c.knots || c.teams || c.areas || c.placeObjects || !c.objects.empty();
         // Nothing at top level touches a library function: Survivor's strict check runs before Initialise.
         const size_t init = t.find("function Initialise()\n");
         const std::string top = t.substr(0, init);
@@ -1274,6 +1303,60 @@ void Fixtures(const std::string& dir, bool write) {
 }
 }  // namespace
 
+// spawns.mode areas in erg-scene and erg-patch: the block round-trips, its keys are refused in other modes, and the
+// areas are validated (groups, knots, pattern, opposite pairs).
+void TestSpawnAreasJson(const erg::Scene& small) {
+    const std::string text = erg::WriteScene(small), plain = "\"spawns\":{\"mode\":\"" + std::string(erg::SpawnModeName(small.spawns)) + "\"}";
+    Expect(text.find(plain) != std::string::npos, "the synthetic scene's spawns block is the plain mode");
+    const std::string block = "\"spawns\":{\"mode\":\"areas\",\"areas\":[{\"name\":\"SAND W\",\"group\":\"sand\",\"knots\":4},"
+                              "{\"name\":\"SAND E\",\"group\":\"sand\",\"knots\":4},{\"name\":\"PALACE\",\"group\":\"palace\",\"knots\":2}],"
+                              "\"pattern\":[\"sand\",\"sand:opposite\",\"palace\"],\"opposite\":[[0,1]]}";
+    auto with = [&](const std::string& b) {
+        std::string t = text;
+        t.replace(t.find(plain), plain.size(), b);
+        return t;
+    };
+    erg::Scene s;
+    std::string err;
+    Expect(erg::ParseScene(with(block), &s, &err) && s.spawns == erg::SpawnMode::Areas && s.spawnAreas.areas.size() == 3 &&
+               s.spawnAreas.pattern[1].opposite && s.spawnAreas.opposite.size() == 1 && s.spawnAreas.Knots() == 10,
+           "a scene with spawn areas parses: " + err);
+    Expect(erg::WriteScene(s) == with(block), "and writes back byte for byte");
+    Expect(luagen::Needed(s) && luagen::Chunk(s).find("ergSpawnDeal(\"sand:4/sand:4/palace:2;sand/sand:opposite/palace;0-1\", n)") != std::string::npos,
+           "and its chunk carries the areas");
+    const std::pair<const char*, const char*> bad[] = {
+        {"\"spawns\":{\"mode\":\"teams\",\"pattern\":[]}", "only for spawns.mode"},
+        {"\"spawns\":{\"mode\":\"areas\"}", "spawns.areas"},
+        {"\"spawns\":{\"mode\":\"areas\",\"areas\":[]}", "1-8 areas"},
+        {"\"spawns\":{\"mode\":\"areas\",\"areas\":[{\"name\":\"A\",\"group\":\"Sand\",\"knots\":4}]}", "group"},
+        {"\"spawns\":{\"mode\":\"areas\",\"areas\":[{\"name\":\"A\",\"group\":\"a\",\"knots\":9}]}", "knots"},
+        {"\"spawns\":{\"mode\":\"areas\",\"areas\":[{\"name\":\"A\",\"group\":\"a\",\"knots\":4}],\"pattern\":[\"b\"]}", "no area is in group 'b'"},
+        {"\"spawns\":{\"mode\":\"areas\",\"areas\":[{\"name\":\"A\",\"group\":\"a\",\"knots\":4}],\"opposite\":[[0,0]]}", "two different area indexes"},
+        {"\"spawns\":{\"mode\":\"areas\",\"areas\":[{\"name\":\"A\",\"group\":\"a\",\"knots\":4},{\"name\":\"A\",\"group\":\"a\",\"knots\":4}]}", "used twice"},
+        {"\"spawns\":{\"mode\":\"areas\",\"areas\":[{\"name\":\"A\",\"group\":\"a\",\"knots\":4,\"x\":1}]}", "unknown key"},
+        {"\"spawns\":{\"mode\":\"dunes\"}", "\"random\", \"knots\", \"teams\" or \"areas\""},
+    };
+    for (const auto& [b, why] : bad)
+        Expect(!erg::ParseScene(with(b), &s, &err) && err.find(why) != std::string::npos, std::string("refused: ") + b + " -> " + err);
+    // erg-patch: the same block
+    erg::Patch p;
+    std::string ptext;
+    {
+        erg::Scene edited;
+        Expect(erg::ParseScene(with(block), &edited, &err), "the edited scene parses");
+        p.stem = small.stem;
+        p.title = small.title;
+        p.base = small.base;
+        p.spawns = edited.spawns;
+        p.spawnAreas = edited.spawnAreas;
+        ptext = erg::WritePatch(p);
+    }
+    erg::Patch back;
+    Expect(erg::ParsePatch(ptext, &back, &err) && back.spawns == erg::SpawnMode::Areas && back.spawnAreas == p.spawnAreas,
+           "a patch with spawn areas round-trips: " + err);
+    Expect(erg::WritePatch(back) == ptext, "and writes back byte for byte");
+}
+
 int main(int argc, char** argv) {
     bool write = false;
     for (int i = 1; i < argc; ++i) write |= std::strcmp(argv[i], "--write") == 0;
@@ -1288,6 +1371,7 @@ int main(int argc, char** argv) {
     TestManifest();
     TestV2Model();
     TestChunkGrammar();
+    TestSpawnAreasJson(small);
     TestFactorySettings();
     TestManifestV2();
     Fixtures(std::string(MELANGE_SOURCE_DIR) + "/tests/fixtures/erg", write);

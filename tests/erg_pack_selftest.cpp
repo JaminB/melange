@@ -239,6 +239,22 @@ void TestPackInstall(const fs::path& base) {
     errs.clear();
     Expect(melange::spice::Parse(dir4.wstring(), &gm, &errs) && errs.empty() && gm.melangeRange == ">=0.14.0",
            "spice.json carries the asked melange.range");
+    // a level that uses 0.15.0's level-entry keys or spawn areas is gated by itself when no range is asked
+    for (int k = 0; k < 3; ++k) {
+        auto needs = BasicSpec("sample", /*source=*/false, /*withChunk=*/true);
+        if (k == 0) needs.timeOfDay = "DAY";
+        if (k == 1) needs.image = "thumb/sample.png";
+        if (k == 2) needs.spawnAreas = true;
+        const fs::path d = base / ("install-needs" + std::to_string(k)) / "erg-pack-test";
+        Expect(erg::pack::WritePack(needs, d.wstring(), &files, &err) &&
+                   ReadFile(d / "spice.json").find("\"range\":\">=0.15.0\"") != std::string::npos,
+               "timeOfDay, image or spawn areas with no asked range write melange.range >=0.15.0 (" + std::to_string(k) + ")");
+        needs.melangeRange = ">=0.14.0";
+        const fs::path d2 = base / ("install-asked" + std::to_string(k)) / "erg-pack-test";
+        Expect(erg::pack::WritePack(needs, d2.wstring(), &files, &err) &&
+                   ReadFile(d2 / "spice.json").find("\"range\":\">=0.14.0\"") != std::string::npos,
+               "an asked melange.range is kept as asked (" + std::to_string(k) + ")");
+    }
     gated.melangeRange = "newest please";
     const fs::path dir5 = base / "install-badrange" / "erg-pack-test";
     Expect(!erg::pack::WritePack(gated, dir5.wstring(), &files, &err) && !FileExists(dir5 / "spice.json"),

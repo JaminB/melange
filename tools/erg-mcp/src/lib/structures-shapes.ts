@@ -56,10 +56,45 @@ export const cylinder = (op: Op, mat: number, cx: number, cz: number, r: number,
 /** Two cells on, one off along a running coordinate: the crenellations. */
 export const merlon = (u: number) => ((Math.floor(u) % 3) + 3) % 3 < 2;
 
+// ------------------------------------------------------------------ material bands and trim
+
+/** A material by height above the structure's floor (or its base line, for a wall): [from, to) in voxels. */
+export interface MatBand { from: number; to: number; material: number; }
+
+/** Trim: the topmost layer of the body (`top`, `topDepth` thick, default 1), the merlon row (`merlonCap`) and one stripe at
+ * height `course.y` (`course.h` thick, default 1). */
+export interface Trim { top?: number; topDepth?: number; merlonCap?: number; course?: { y: number; material: number; h?: number }; }
+
+/** Material bands and trim for a structure's fills. Unset (or empty), the shapes are left exactly as they are. */
+export interface MatStyle { bands?: MatBand[]; trim?: Trim; }
+
+export const hasStyle = (st?: MatStyle): st is MatStyle =>
+  !!st && (!!st.bands?.length || (!!st.trim && (st.trim.top !== undefined || st.trim.merlonCap !== undefined || st.trim.course !== undefined)));
+
+/** The material of a fill cell at height `d` above the structure's floor. `top` is the height of the body's top (its top
+ * layer is the voxel row under it), `cap` marks the merlon row. Precedence: course, then top (merlonCap on the merlons),
+ * then the first band holding d, then the shape's own material. */
+export function styleMat(mat: number, st: MatStyle, d: number, top: number | undefined, cap = false): number {
+  const t = st.trim;
+  if (t?.course && d >= t.course.y && d < t.course.y + (t.course.h ?? 1)) return t.course.material;
+  if (cap) { if (t?.merlonCap !== undefined) return t.merlonCap; }
+  else if (t?.top !== undefined && top !== undefined && d >= top - (t.topDepth ?? 1) && d < top) return t.top;
+  if (st.bands) for (const b of st.bands) if (d >= b.from && d < b.to) return b.material;
+  return mat;
+}
+
+/** The shape with its material styled by height above y = 0 (fills only; a shape without style comes back as it is). */
+export function styled(s: Shape, st: MatStyle | undefined, top?: number, cap = false): Shape {
+  if (!hasStyle(st) || s.op === "carve") return s;
+  const base = s.matAt;
+  return { ...s, matAt: (x, y, z) => styleMat(base ? base(x, y, z) : s.mat, st, y, top, cap) };
+}
+
 export function translate(shapes: Shape[], d: Vec3): Shape[] {
   return shapes.map((s) => ({
     op: s.op, mat: s.mat, min: [s.min[0] + d[0], s.min[1] + d[1], s.min[2] + d[2]], max: [s.max[0] + d[0], s.max[1] + d[1], s.max[2] + d[2]],
     hit: (x, y, z) => s.hit(x - d[0], y - d[1], z - d[2]), part: s.part, ...(s.keep ? { keep: true } : {}),
+    ...(s.matAt ? { matAt: (x: number, y: number, z: number) => s.matAt!(x - d[0], y - d[1], z - d[2]) } : {}),
   }));
 }
 
@@ -70,6 +105,7 @@ export function scaled(shapes: Shape[], k: number): Shape[] {
   return shapes.map((s) => ({
     op: s.op, mat: s.mat, min: [s.min[0] * k, s.min[1] * k, s.min[2] * k], max: [s.max[0] * k, s.max[1] * k, s.max[2] * k],
     hit: (x, y, z) => s.hit(x / k, y / k, z / k), part: s.part, ...(s.keep ? { keep: true } : {}),
+    ...(s.matAt ? { matAt: (x: number, y: number, z: number) => s.matAt!(x / k, y / k, z / k) } : {}),
   }));
 }
 
@@ -94,6 +130,10 @@ export function place(shapes: Shape[], at: Vec3, yawDeg = 0): Shape[] {
         const dx = x - at[0], dz = z - at[2];
         return sh.hit(c * dx - s * dz, y - at[1], s * dx + c * dz);
       },
+      ...(sh.matAt ? { matAt: (x: number, y: number, z: number) => {
+        const dx = x - at[0], dz = z - at[2];
+        return sh.matAt!(c * dx - s * dz, y - at[1], s * dx + c * dz);
+      } } : {}),
     };
   });
 }
@@ -109,19 +149,31 @@ export function placePoint(p: Vec3, at: Vec3, yawDeg = 0): Vec3 {
 /** A door or gate through the wall of a rectangle (half sizes hw along x, hd along z, walls `wallT` thick) on `side`,
  * centred on the side (`shift` along it). Round-topped when the opening is at least 3 wide and 2 higher than half its
  * width. `below` carves its floor that far under y0 at the outer face, rising to y0 at the inner face: a ramp down to
- * ground outside that is lower than the floor, instead of a sill as high as the difference. */
-export function doorway(hw: number, hd: number, wallT: number, side: Side, width: number, height: number, y0 = 0, shift = 0, below = 0, square = false): Shape {
+ * ground outside that is lower than the floor, instead of a sill as high as the difference. `bevel` cants the head
+ * instead: the two top corners are cut at 45 degrees, `bevel` in from each (at most half the width and the height).
+ * `jambBevel` splays the jambs: each of the opening's four upright edges (a jamb at a face of the wall) is cut at 45
+ * degrees in plan, that far in from the face and along it (at most half the wall), up to where the head starts. */
+export function doorway(hw: number, hd: number, wallT: number, side: Side, width: number, height: number, y0 = 0, shift = 0, below = 0, square = false, bevel = 0, jambBevel = 0): Shape {
   const alongX = side === "n" || side === "s";
   const outer = (alongX ? hd : hw) + 1, inner = (alongX ? hd : hw) - wallT - 1;
   const sign = side === "s" || side === "e" ? 1 : -1;
   const d0 = sign > 0 ? inner : -outer, d1 = sign > 0 ? outer : -inner;
-  const r = width / 2, arched = !square && width >= 3 && height >= r + 2;
-  const ux0 = -r + shift, ux1 = r + shift;
+  const bv = Math.max(0, Math.min(bevel, width / 2, height));
+  const r = width / 2, arched = !bv && !square && width >= 3 && height >= r + 2;
+  const jb = Math.max(0, Math.min(jambBevel, wallT / 2)), faceIn = inner + 1, faceOut = outer - 1;
+  const ux0 = -r - jb + shift, ux1 = r + jb + shift;
   // the floor of the opening at depth d across the wall: y0 at the inner face, y0 - below at the outer face
   const floorAt = (d: number) => (below > 0 ? y0 - below * Math.min(1, Math.max(0, (sign * d - inner) / (outer - inner))) : y0);
   const hit = (x: number, y: number, z: number) => {
     const u = (alongX ? x : z) - shift, d = alongX ? z : x;
-    if (d < d0 || d >= d1 || u < -r || u >= r || y < floorAt(d) || y >= y0 + height) return false;
+    if (d < d0 || d >= d1 || y < floorAt(d) || y >= y0 + height) return false;
+    if (jb && (u < -r || u >= r)) {
+      // the splay: wider by jb at each face, back to the opening's own width jb into the wall; under the head only
+      const sd = sign * d, face = Math.min(Math.abs(sd - faceIn), Math.abs(faceOut - sd));
+      return Math.abs(u) - r + face <= jb + 1e-9 && y < y0 + height - (bv || (arched ? r : 0));
+    }
+    if (u < -r || u >= r) return false;
+    if (bv) return r - Math.abs(u) + (y0 + height - y) >= bv;
     if (!arched || y < y0 + height - r) return true;
     const dy = y - (y0 + height - r);
     return u * u + dy * dy <= r * r;
@@ -140,7 +192,7 @@ export type Parapet = "left" | "right" | "both" | "all";
 /** One wall segment from (ax, ay, az) to (bx, by, bz), a rectangle in plan `t` thick (extended `ext` past both ends) and
  * `h` high above the sloping base line, `found` voxels of foundation below it, and optionally crenellations one row
  * above the top. Left of the direction a->b is +v where v = (-dz, dx). Parts: the body and the merlons. */
-export function wallSegment(a: Vec3, b: Vec3, t: number, h: number, mat: number, o: { found?: number; cren?: boolean; parapet?: Parapet; ext?: number } = {}): Shape[] {
+export function wallSegment(a: Vec3, b: Vec3, t: number, h: number, mat: number, o: { found?: number; cren?: boolean; parapet?: Parapet; ext?: number; style?: MatStyle } = {}): Shape[] {
   const dx = b[0] - a[0], dz = b[2] - a[2], len = Math.hypot(dx, dz);
   if (len < 1e-9) return [];
   const ux = dx / len, uz = dz / len, found = o.found ?? 0, ext = o.ext ?? t / 2, hw = t / 2;
@@ -164,6 +216,9 @@ export function wallSegment(a: Vec3, b: Vec3, t: number, h: number, mat: number,
       return y >= yb - found && y < yb + h;
     },
   };
+  const st = hasStyle(o.style) ? o.style : undefined;
+  // styled by height above the (sloping) base line
+  if (st) body.matAt = (x, y, z) => styleMat(mat, st, y - base(uv(x, z)[0]), h);
   if (!o.cren) return [body];
   const parapet = t < 3 ? "all" : o.parapet ?? "both";
   const merlons: Shape = {
@@ -176,10 +231,41 @@ export function wallSegment(a: Vec3, b: Vec3, t: number, h: number, mat: number,
       return parapet === "all" || (parapet === "left" ? v >= hw - 1 : parapet === "right" ? v < -hw + 1 : Math.abs(v) >= hw - 1);
     },
   };
+  if (st) merlons.matAt = (x, y, z) => styleMat(mat, st, y - base(uv(x, z)[0]), h, true);
   return [body, merlons];
 }
 
 // ------------------------------------------------------------------ towers and keeps
+
+/** A roof on a tower's top: a solid of revolution standing on the top floor (y = the tower's height), inside the merlon
+ * ring when the tower is crenellated. dome: a sphere cap (height <= radius) or half an ellipsoid; onion: a neck, a bulge a
+ * tenth wider than the base a third of the way up, then a taper to a point; cone: straight to a point. `tip` paints the
+ * topmost `tipHeight` (a finial). */
+export interface RoofSpec { style: "dome" | "onion" | "cone"; radius: number; height: number; material: number; tip?: number; tipHeight?: number; }
+
+/** The least radius of a cone's or an onion's top (design voxels): a voxel centre half a voxel off the axis is inside. */
+export const TIP_RADIUS = 0.75;
+
+/** An onion dome's width (1 = the base circle's radius) at t, 0 at its foot to 1 at its tip. */
+export function onionProfile(t: number): number {
+  if (t <= 0.3) return 0.85 + 0.25 * Math.sin((t / 0.3) * (Math.PI / 2));
+  return 1.1 * Math.pow(Math.cos(((t - 0.3) / 0.7) * (Math.PI / 2)), 0.8);
+}
+
+/** The roof's shape with its base centre at (cx, y0, cz). */
+export function roof(r: RoofSpec, cx: number, y0: number, cz: number): Shape {
+  const R = r.radius, h = r.height, w = r.style === "onion" ? R * 1.1 : R;
+  let inside: (d2: number, y: number) => boolean;
+  // a pointed roof thinner than a voxel near its tip would end short of its height: it keeps a stub of TIP_RADIUS
+  if (r.style === "cone") inside = (d2, y) => { const q = Math.max(TIP_RADIUS, R * (1 - (y - y0) / h)); return d2 < q * q; };
+  else if (r.style === "onion") inside = (d2, y) => { const q = Math.max(TIP_RADIUS, R * onionProfile((y - y0) / h)); return d2 < q * q; };
+  else if (h <= R) { const S = (R * R + h * h) / (2 * h), yc = y0 + h - S; inside = (d2, y) => d2 + (y - yc) ** 2 < S * S; }
+  else inside = (d2, y) => d2 / (R * R) + ((y - y0) / h) ** 2 < 1;
+  const s: Shape = { op: "fill", mat: r.material, min: [cx - w, y0, cz - w], max: [cx + w, y0 + h, cz + w],
+    hit: (x, y, z) => y >= y0 && y < y0 + h && inside((x - cx) ** 2 + (z - cz) ** 2, y) };
+  if (r.tip !== undefined) { const from = y0 + h - (r.tipHeight ?? 1), tip = r.tip; s.matAt = (_x, y) => (y >= from - 1e-9 ? tip : r.material); }
+  return s;
+}
 
 export interface TowerSpec {
   shape: "round" | "square";
@@ -194,6 +280,8 @@ export interface TowerSpec {
   cren: boolean;
   found: number;
   cx?: number; cz?: number;     // centre in local coordinates (default 0)
+  style?: MatStyle;
+  roof?: RoofSpec;              // on the top floor (a solid tower's top, a hollow tower's rim is roofed over)
 }
 
 /** A tower on its floor level: solid or hollow (open top, floor at y = 0), with a door and crenellations round the rim. */
@@ -205,10 +293,10 @@ export function tower(t: TowerSpec): Shape[] {
   const body = (op: Op, rr: number, y0: number, y1: number): Shape => ({
     op, mat: t.material, min: [cx - rr, y0, cz - rr], max: [cx + rr, y1, cz + rr], hit: (x, y, z) => y >= y0 && y < y1 && inRing(x, z, rr),
   });
-  out.push(body("fill", r, -t.found, h));
+  out.push(styled(body("fill", r, -t.found, h), t.style, h));
   if (t.cren) {
     const n = Math.max(6, Math.round(2 * Math.PI * r));
-    out.push({
+    out.push(styled({
       op: "fill", mat: t.material, min: [cx - r, h, cz - r], max: [cx + r, h + 1, cz + r],
       hit: (x, y, z) => {
         if (y < h || y >= h + 1 || !inRing(x, z, r) || inRing(x, z, r - 1)) return false;
@@ -217,10 +305,12 @@ export function tower(t: TowerSpec): Shape[] {
         const p = Math.abs(dx) > Math.abs(dz) ? Math.floor(dz) + (dx > 0 ? 1000 : 2000) : Math.floor(dx) + (dz > 0 ? 3000 : 4000);
         return merlon(p);
       },
-    });
+    }, t.style, h, true));
   }
   if (t.hollow && r - t.wall > 0.5) out.push(body("carve", r - t.wall, 0, h + 2));
   if (t.door) out.push(...translate([doorway(r, r, t.wall, t.door, t.doorWidth, t.doorHeight)], [cx, 0, cz]));
+  // after the hollow's carve (which reaches 2 over the rim), so the roof closes the tower
+  if (t.roof) out.push(roof(t.roof, cx, h, cz));
   return out;
 }
 
@@ -237,21 +327,22 @@ export interface KeepSpec {
   windows: boolean;
   cren: boolean;
   found: number;
+  style?: MatStyle;
 }
 
 /** A rectangular keep centred on the origin: walls `wall` thick, a floor-level interior, a flat roof one layer thick with
  * crenellations on its rim, a door and arrow slits. */
 export function keep(k: KeepSpec): Shape[] {
   const hw = k.size[0] / 2, hd = k.size[1] / 2, h = k.height, w = k.wall;
-  const out: Shape[] = [box("fill", k.material, [-hw, -k.found, -hd], [hw, h, hd])];
+  const out: Shape[] = [styled(box("fill", k.material, [-hw, -k.found, -hd], [hw, h, hd]), k.style, h)];
   if (k.cren) {
-    out.push({
+    out.push(styled({
       op: "fill", mat: k.material, min: [-hw, h, -hd], max: [hw, h + 1, hd],
       hit: (x, y, z) => {
         if (y < h || y >= h + 1 || (Math.abs(x) < hw - 1 && Math.abs(z) < hd - 1)) return false;
         return merlon(Math.abs(x) >= hw - 1 && Math.abs(z) < hd - 1 ? z + 500 : x + 500);
       },
-    });
+    }, k.style, h, true));
   }
   if (k.hollow) {
     const top = k.roof ? h - 1 : h + 2;
@@ -300,15 +391,30 @@ export interface CastleSpec {
   material: number;
   cren: boolean;
   found: number;
+  style?: MatStyle;                 // bands and trim by height above the floor, on the walls, towers, keep and foundation
+  /** A roof per corner tower, in TOWER_CORNERS' order (nw, sw, ne, se); null leaves that tower's top open. */
+  towerRoofs?: (RoofSpec | null)[];
 }
 
-export interface GateSpec { side: Side; width: number; height: number; shift: number; below: number; }
+/** The corner towers in the order castle() builds them (parts 5-8): x west to east, z north (-z) to south. */
+export const TOWER_CORNERS = ["nw", "sw", "ne", "se"] as const;
+export type TowerCorner = typeof TOWER_CORNERS[number];
+
+/** Each corner tower's centre at its top floor, in the castle's local coordinates, with its roof (if any). */
+export function castleTowers(c: CastleSpec): { corner: TowerCorner; at: Vec3; roof: RoofSpec | null }[] {
+  const hw = c.size[0] / 2, hd = c.size[1] / 2, t = c.wallThickness, out: { corner: TowerCorner; at: Vec3; roof: RoofSpec | null }[] = [];
+  let i = 0;
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) { out.push({ corner: TOWER_CORNERS[i], at: [sx * (hw - t / 2), c.towerHeight, sz * (hd - t / 2)], roof: c.towerRoofs?.[i] ?? null }); i++; }
+  return out;
+}
+
+export interface GateSpec { side: Side; width: number; height: number; shift: number; below: number; bevel?: number; jambBevel?: number; }
 
 /** A curtain wall on a rectangle with a tower on each corner, an optional keep in the courtyard and a gate (or gates). */
 export function castle(c: CastleSpec): Shape[] {
   const hw = c.size[0] / 2, hd = c.size[1] / 2, t = c.wallThickness, out: Shape[] = [];
   // parts, for packing new blocks one per part: 0 the foundation, 1-4 the walls, 5-8 the towers, 9 the keep
-  if (c.found > 0) out.push({ ...box("fill", c.material, [-hw, -c.found, -hd], [hw, 0, hd]), part: 0 });
+  if (c.found > 0) out.push({ ...styled(box("fill", c.material, [-hw, -c.found, -hd], [hw, 0, hd]), c.style), part: 0 });
   // wall centre lines, each crenellated on its outer side (the side away from the origin)
   const ring: [Vec3, Vec3][] = [
     [[-hw + t / 2, 0, -hd + t / 2], [hw - t / 2, 0, -hd + t / 2]],
@@ -320,24 +426,25 @@ export function castle(c: CastleSpec): Shape[] {
     const dx = b[0] - a[0], dz = b[2] - a[2], len = Math.hypot(dx, dz);
     const vx = -dz / len, vz = dx / len;                       // left of a->b
     const inward = ((a[0] + b[0]) / 2) * vx + ((a[2] + b[2]) / 2) * vz < 0;   // the origin lies on the +v side
-    out.push(...tagged(wallSegment(a, b, t, c.wallHeight, c.material, { cren: c.cren, parapet: inward ? "right" : "left", ext: t / 2 }), 1 + w));
+    out.push(...tagged(wallSegment(a, b, t, c.wallHeight, c.material, { cren: c.cren, parapet: inward ? "right" : "left", ext: t / 2, style: c.style }), 1 + w));
 
   }
   let tp = 5;
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     out.push(...tagged(tower({ shape: c.towerShape, radius: c.towerRadius, height: c.towerHeight, material: c.material, hollow: false, wall: 2, door: null,
-      doorWidth: 2, doorHeight: 3, cren: c.cren, found: c.found, cx: sx * (hw - t / 2), cz: sz * (hd - t / 2) }), tp++));
+      doorWidth: 2, doorHeight: 3, cren: c.cren, found: c.found, style: c.style, cx: sx * (hw - t / 2), cz: sz * (hd - t / 2),
+      ...(c.towerRoofs?.[tp - 5] ? { roof: c.towerRoofs[tp - 5]! } : {}) }), tp++));
   }
   if (c.keepSize) {
     const k = keep({ size: c.keepSize, height: c.keepHeight, material: c.material, wall: Math.min(2, Math.floor(Math.min(...c.keepSize) / 3)), hollow: true,
-      roof: true, door: c.keepDoor === undefined ? c.gate : c.keepDoor, doorWidth: Math.min(3, c.gateWidth), doorHeight: Math.min(4, c.gateHeight), windows: true, cren: c.cren, found: c.found });
+      roof: true, door: c.keepDoor === undefined ? c.gate : c.keepDoor, doorWidth: Math.min(3, c.gateWidth), doorHeight: Math.min(4, c.gateHeight), windows: true, cren: c.cren, found: c.found, style: c.style });
     out.push(...tagged(c.keepAt && (c.keepAt[0] || c.keepAt[1]) ? translate(k, [c.keepAt[0], 0, c.keepAt[1]]) : k, 9));
   }
   // a gate that leaves no lintel (within a voxel of the wall's top) would leave the merlons over it floating: it is cut
   // open to the top of the merlon row instead, square
   const open = (h: number) => h >= c.wallHeight - 1 - 1e-9;
   const gh = (h: number) => (open(h) ? c.wallHeight + 2 : h);
-  if (c.gates) for (const g of c.gates) out.push(doorway(hw, hd, t, g.side, g.width, gh(g.height), 0, g.shift, g.below, open(g.height)));
+  if (c.gates) for (const g of c.gates) out.push(doorway(hw, hd, t, g.side, g.width, gh(g.height), 0, g.shift, g.below, open(g.height), open(g.height) ? 0 : g.bevel ?? 0, g.jambBevel ?? 0));
   else if (c.gate) out.push(doorway(hw, hd, t, c.gate, c.gateWidth, gh(c.gateHeight), 0, 0, 0, open(c.gateHeight)));
   return out;
 }
@@ -363,7 +470,8 @@ export function castleSpots(c: CastleSpec): Spot[] {
   const walk = Math.max(0.5, t / 4);
   out.push({ kind: "rampart", at: [0, c.wallHeight, -hd + t / 2 + walk] }, { kind: "rampart", at: [0, c.wallHeight, hd - t / 2 - walk] },
     { kind: "rampart", at: [-hw + t / 2 + walk, c.wallHeight, 0] }, { kind: "rampart", at: [hw - t / 2 - walk, c.wallHeight, 0] });
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) out.push({ kind: "tower", at: [sx * (hw - t / 2), c.towerHeight, sz * (hd - t / 2)] });
+  // a roofed tower's top is no place to stand
+  for (const tw of castleTowers(c)) if (!tw.roof) out.push({ kind: "tower", at: tw.at });
   return out;
 }
 
@@ -454,8 +562,13 @@ export function crater(c: CraterSpec): Shape[] {
 }
 
 /** The tunnel as shapes: a lining shell of `lining` thickness (fill) round every segment, then the bore (carve). */
-export function tunnel(points: Vec3[], radius: number, shape: "round" | "square", lining: { material: number; thickness: number } | null): Shape[] {
+export function tunnel(points: Vec3[], radius: number, shape: "round" | "square", lining: { material: number; thickness: number } | null, caps: "round" | "flat" = "round"): Shape[] {
   const out: Shape[] = [];
+  // caps flat: the bore stops at the plane through its first and its last point, square to the segment there (a mouth
+  // flush with a wall's face); round (default) runs a radius past them
+  const seg = points.map((p, i) => i + 1 < points.length && Math.hypot(points[i + 1][0] - p[0], points[i + 1][1] - p[1], points[i + 1][2] - p[2]) > 1e-6);
+  const first = seg.indexOf(true), last = seg.lastIndexOf(true);
+  const past = (i: number, t: number) => caps === "flat" && ((i === first && t < 0) || (i === last && t > 1));
   const parts = (r: number, op: Op, mat: number): Shape[] => {
     const s: Shape[] = [];
     for (let i = 0; i + 1 < points.length; i++) {
@@ -470,7 +583,9 @@ export function tunnel(points: Vec3[], radius: number, shape: "round" | "square"
         s.push({
           op, mat, min, max,
           hit: (x, y, z) => {
-            const t = Math.min(1, Math.max(0, ((x - a[0]) * dx + (y - a[1]) * dy + (z - a[2]) * dz) / len2));
+            const t0 = ((x - a[0]) * dx + (y - a[1]) * dy + (z - a[2]) * dz) / len2;
+            if (past(i, t0)) return false;
+            const t = Math.min(1, Math.max(0, t0));
             const ex = x - a[0] - t * dx, ey = y - a[1] - t * dy, ez = z - a[2] - t * dz;
             return ex * ex + ey * ey + ez * ez < r * r;
           },
@@ -479,7 +594,9 @@ export function tunnel(points: Vec3[], radius: number, shape: "round" | "square"
         s.push({
           op, mat, min, max,
           hit: (x, y, z) => {
-            const t = Math.min(1, Math.max(0, ((x - a[0]) * dx + (y - a[1]) * dy + (z - a[2]) * dz) / len2));
+            const t0 = ((x - a[0]) * dx + (y - a[1]) * dy + (z - a[2]) * dz) / len2;
+            if (past(i, t0)) return false;
+            const t = Math.min(1, Math.max(0, t0));
             const px = x - a[0] - t * dx, pz = z - a[2] - t * dz;
             const v = -px * uz + pz * ux;                         // sideways in plan, off the line
             const dyLine = y - (a[1] + t * dy);
@@ -503,6 +620,7 @@ export interface FlatTunnelSpec {
   floor: number;                // thickness of the floor slab filled under it where it is empty (0: none)
   material: number;             // the floor slab's
   lining: { material: number; thickness: number } | null;
+  caps?: "round" | "flat";     // flat: the bore stops at the plane through its first and last point (default round)
 }
 
 /** A tunnel with a flat, walkable floor (dig_tunnel floor "flat"): per segment, a cell's distance from the segment in plan
@@ -510,6 +628,8 @@ export interface FlatTunnelSpec {
  * cells: a floor across a gap, not a repaint of the rock), then the bore. */
 export function flatTunnel(t: FlatTunnelSpec): Shape[] {
   const r = t.radius, H = t.headroom, out: Shape[] = [];
+  const segs = t.points.map((p, i) => i + 1 < t.points.length && Math.hypot(t.points[i + 1][0] - p[0], t.points[i + 1][2] - p[2]) > 1e-6);
+  const firstSeg = segs.indexOf(true), lastSeg = segs.lastIndexOf(true);
   const parts = (op: Op, mat: number, grow: number, below: number, slab: boolean): Shape[] => {
     const s: Shape[] = [];
     for (let i = 0; i + 1 < t.points.length; i++) {
@@ -522,7 +642,9 @@ export function flatTunnel(t: FlatTunnelSpec): Shape[] {
       s.push({
         op, mat, min, max, ...(slab ? { keep: true } : {}),
         hit: (x, y, z) => {
-          const f = Math.min(1, Math.max(0, ((x - a[0]) * dx + (z - a[2]) * dz) / hl2));
+          const f0 = ((x - a[0]) * dx + (z - a[2]) * dz) / hl2;
+          if (t.caps === "flat" && ((i === firstSeg && f0 < 0) || (i === lastSeg && f0 > 1))) return false;
+          const f = Math.min(1, Math.max(0, f0));
           const px = x - a[0] - f * dx, pz = z - a[2] - f * dz, d2 = px * px + pz * pz;
           if (d2 >= R * R) return false;
           const h = y - (a[1] + f * dy);

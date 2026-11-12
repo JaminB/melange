@@ -162,6 +162,34 @@ bool Decode(const std::wstring& assetsDir, const std::string& relPng, std::vecto
     return ok;
 }
 
+}  // namespace
+
+bool DecodePngFile(const std::wstring& path, int maxSide, std::vector<uint8_t>* rgba, int* w, int* h, std::string* err) {
+    FILE* f = _wfopen(path.c_str(), L"rb");
+    if (!f) {
+        if (err) *err = "could not open the PNG";
+        return false;
+    }
+    int n = 0;
+    *w = *h = 0;
+    if (!stbi_info_from_file(f, w, h, &n) || *w < 1 || *h < 1 || *w > maxSide || *h > maxSide) {
+        fclose(f);
+        if (err) *err = "must be a PNG of at most " + std::to_string(maxSide) + " pixels a side";
+        return false;
+    }
+    rewind(f);
+    uint8_t* px = stbi_load_from_file(f, w, h, &n, 4);
+    fclose(f);
+    if (!px) {
+        if (err) *err = "could not decode the PNG";
+        return false;
+    }
+    rgba->assign(px, px + static_cast<size_t>(*w) * static_cast<size_t>(*h) * 4);
+    stbi_image_free(px);
+    return true;
+}
+
+namespace {
 const Decoded* Cached(const std::string& modId, const std::string& relPng) {
     for (auto& d : g_decoded)
         if (d.modId == modId && d.relPng == relPng) return &d;

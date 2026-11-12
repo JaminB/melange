@@ -485,6 +485,7 @@ Patch Diff(const Scene& base, const Scene& edited, const VoxelEdits& voxels, con
         if (*w[k] != *h[k] && !w[k]->empty()) *d[k] = *w[k];
     p.water = edited.water;
     p.spawns = edited.spawns;
+    p.spawnAreas = edited.spawnAreas;
     p.hmp = edited.hmp;
     p.objects = edited.objects;
     for (const auto& b : base.details) {

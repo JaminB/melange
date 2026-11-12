@@ -225,11 +225,8 @@ bool ParsePatch(std::string_view json, Patch* out, std::string* err) {
             p.water = w;
         }
     }
-    if (const Json* sp = root.find("spawns")) {
-        if (!Obj(sp, "spawns", err) || !OnlyKeys(*sp, {"mode"}, "spawns", err) || !GetString(*sp, "mode", "spawns", &mode, err))
-            return false;
-        if (!ParseSpawnMode(mode, &p.spawns)) return Fail(err, "spawns.mode: must be \"random\", \"knots\" or \"teams\"");
-    }
+    if (const Json* sp = root.find("spawns"))
+        if (!ParseSpawns(sp, &p.spawns, &p.spawnAreas, err)) return false;
     if (const Json* hmp = root.find("hmp")) {
         if (!Obj(hmp, "hmp", err) || !OnlyKeys(*hmp, {"mode"}, "hmp", err) || !GetString(*hmp, "mode", "hmp", &mode, err))
             return false;
@@ -376,9 +373,7 @@ std::string WritePatch(const Patch& p) {
     Json water = Json::Obj();
     water.set("level", p.water ? Num(*p.water) : Json::Null_());
     root.set("water", std::move(water));
-    Json sp = Json::Obj();
-    sp.set("mode", Str(SpawnModeName(p.spawns)));
-    root.set("spawns", std::move(sp));
+    root.set("spawns", SpawnsJson(p.spawns, p.spawnAreas));
     Json hmp = Json::Obj();
     hmp.set("mode", Str(HmpModeName(p.hmp)));
     root.set("hmp", std::move(hmp));
@@ -574,6 +569,7 @@ bool ApplyPatch(Scene& s, const Patch& p, const PatchRules& rules, std::string* 
     if (p.databank.heightmapSecond) out.databank.heightmapSecond = *p.databank.heightmapSecond;
     out.water = p.water;
     out.spawns = p.spawns;
+    out.spawnAreas = p.spawnAreas;
     out.hmp = p.hmp;
     out.survivor = p.survivor;
     out.objects = p.objects;

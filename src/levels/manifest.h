@@ -18,6 +18,10 @@ struct LevelDecl {
     std::string mod, slug, stem, title, type;
     bool chunk = false, survivor = false;
     std::string source, sim;                          // sim: "sim/<name>.lua", the level's sandboxed script
+    // Optional. timeOfDay: "DAY", "EVENING" or "NIGHT" pins the level's light in every match (the frontend's pick, random
+    // in Versus, is overridden), "level" lets the built level's own Databank.TimeOfDay decide; "" leaves the frontend's.
+    // image: a PNG in the mod folder, shown as the level's picture in the map menus instead of the template's.
+    std::string timeOfDay, image;
 };
 struct Error {
     std::string mod, text;
@@ -33,6 +37,8 @@ std::vector<std::string> RequiredFiles(const LevelDecl& d);
 std::vector<std::string> Scripts(const LevelDecl& d);   // stdvs, wormpot (+ the stem for a chunk)
 std::string TwinKey(const std::string& stem);           // "Multi.<stem>.S"
 std::vector<std::string> SurvivorScripts(const LevelDecl& d);   // Survivor (+ the stem when the chunk runs there)
+bool ValidTimeOfDay(const std::string& t);              // "", DAY, EVENING, NIGHT or level
+bool ValidImagePath(const std::string& p);              // relative, no "..", .png, at most 200 characters
 bool ValidSimPath(const std::string& p);                // relative, under sim/, .lua, no "..", at most 200 characters
 bool CheckSimText(std::string_view bytes, std::string* why);   // <= 256 KB, UTF-8 without a BOM or ESC
 constexpr const char* kNotBuilt = "not built: start the game from Melange.exe, or open Erg and press Build";

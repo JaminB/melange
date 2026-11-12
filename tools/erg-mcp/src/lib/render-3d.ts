@@ -121,6 +121,8 @@ function faceNormals(g: Grid): Vec3[] {
 export interface ViewInput {
   grids: Grid[];
   tint: (m: number) => Rgb;
+  tintSide?: (m: number) => Rgb;   // the colour of a material's sides (its side texture's), for every face but a top; default tint
+  normaliseTop?: boolean;          // scale the light so a level top in the sun draws exactly its tint (a graded tint is the game's colour of such a top)
   look: Look;
   water: number | null;        // map y of the water plane, or null for none
   markers?: Marker[];
@@ -128,6 +130,12 @@ export interface ViewInput {
   clip?: Region | null;        // draw only voxels whose centre is in this xz box
   edges?: boolean;             // darken silhouette edges (default true)
   meshes?: { tris: ArrayLike<number>; rgb: Rgb }[];   // extra triangles (scenery meshes, map units, 9 numbers each), drawn two-sided in a flat colour
+  /** The level's sea material (set_water_look): the water plane as a matte surface of this colour at this opacity (1:
+   * nothing under it shows), instead of the translucent blue plane. `rgb` alone absent: the look's colour, this opacity. */
+  sea?: { rgb?: Rgb; opacity: number };
+  /** The level's haze: its colour, and how much of a point `dist` map units away it takes over land and over the sea
+   * (lib/sea-look's hazeAt). The band under the horizon and just over it is the haze's colour too. */
+  haze?: { rgb: Rgb; at(dist: number): { land: number; sea: number }; amount: number };
 }
 
 export interface PlacedMarker { kind: MarkerKind; name: string; pos: Vec3; px: [number, number]; visible: boolean; }
@@ -232,19 +240,19 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
   // ---- the faces: a face of a solid cell is exposed when its neighbour in the same grid is empty or outside it
   let faces = 0, framesDrawn = 0;
   const pts = new Float64Array(12), centre = new Float64Array(3), tri3 = new Float64Array(9);
-  const lit = (nm: Vec3) => {
+  const litRaw = (nm: Vec3) => {
     const diff = Math.max(0, dot(nm, L)) * look.diffuse, amb = look.ambient * (0.78 + 0.22 * nm[1]);
     return [amb + diff * look.sunColour[0], amb + diff * look.sunColour[1], amb + diff * look.sunColour[2]];
   };
+  const topL = input.normaliseTop ? litRaw([0, 1, 0]).map((v) => Math.max(v, 1e-3)) : [1, 1, 1];
+  const lit = (nm: Vec3) => { const l = litRaw(nm); return [l[0] / topL[0], l[1] / topL[1], l[2] / topL[2]]; };
+  const sideTint = input.tintSide;
   const clip = input.clip ?? null;
   for (const g of input.grids) {
     const [X, Y, Z] = g.size, words = g.words;
     const normals = faceNormals(g);
     // per face direction: is it facing a camera anywhere (an affine grid's faces share a normal), and its light
-    const light = normals.map((nm) => {
-      const diff = Math.max(0, dot(nm, L)) * look.diffuse, amb = look.ambient * (0.78 + 0.22 * nm[1]);
-      return [amb + diff * look.sunColour[0], amb + diff * look.sunColour[1], amb + diff * look.sunColour[2]];
-    });
+    const light = normals.map((nm) => lit(nm));
     let drew = false;
     for (let z = 0; z < Z; z++)
       for (let x = 0; x < X; x++) {
@@ -256,7 +264,7 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
             gridCorner(g, x + 0.5, y + 0.5, z + 0.5, centre, 0);
             if (centre[0] < clip.x0 || centre[0] >= clip.x1 || centre[2] < clip.z0 || centre[2] >= clip.z1) continue;
           }
-          let tintC: Rgb | null = null, jit = 0;
+          let tintC: Rgb | null = null, jit = 0, sideC: Rgb | null = null;
           for (let k = 0; k < 6; k++) {
             const d = FACES[k].d, nx = x + d[0], ny = y + d[1], nz = z + d[2];
             if (nx >= 0 && ny >= 0 && nz >= 0 && nx < X && ny < Y && nz < Z && isSolid(words[(nz * X + nx) * Y + ny])) continue;
@@ -273,7 +281,9 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
                 if ((pts[a0] - E[0]) * tn[0] + (pts[a0 + 1] - E[1]) * tn[1] + (pts[a0 + 2] - E[2]) * tn[2] >= 0) continue;
                 for (let v = 0; v < 3; v++) for (let q = 0; q < 3; q++) tri3[v * 3 + q] = pts[idx[t + v] * 3 + q];
                 const li = lit(tn);
-                const rr = Math.min(255, Math.round(tintC[0] * li[0] * jit)), gg = Math.min(255, Math.round(tintC[1] * li[1] * jit)), bb = Math.min(255, Math.round(tintC[2] * li[2] * jit));
+                // a skin's sheared top is still its top; its other faces are sides
+                const fc = sideTint && k !== 2 ? (sideC ??= sideTint(material(wd))) : tintC;
+                const rr = Math.min(255, Math.round(fc[0] * li[0] * jit)), gg = Math.min(255, Math.round(fc[1] * li[1] * jit)), bb = Math.min(255, Math.round(fc[2] * li[2] * jit));
                 if (quad(tri3, (rr << 16) | (gg << 8) | bb, 3)) { faces++; drew = true; }
               }
               continue;
@@ -293,7 +303,8 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
               }
               continue;
             }
-            const rr = Math.min(255, Math.round(tintC[0] * li[0] * jit)), gg = Math.min(255, Math.round(tintC[1] * li[1] * jit)), bb = Math.min(255, Math.round(tintC[2] * li[2] * jit));
+            const fc = sideTint && k !== 2 ? (sideC ??= sideTint(material(wd))) : tintC;
+            const rr = Math.min(255, Math.round(fc[0] * li[0] * jit)), gg = Math.min(255, Math.round(fc[1] * li[1] * jit)), bb = Math.min(255, Math.round(fc[2] * li[2] * jit));
             if (quad(pts, (rr << 16) | (gg << 8) | bb)) { faces++; drew = true; }
           }
         }
@@ -323,7 +334,8 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
   const edges = input.edges !== false;
   const water = input.water;
   const under = water !== null && E[1] < water;
-  const [hR, hG, hB] = look.horizon, [zR, zG, zB] = look.zenith, [bR, bG, bB] = look.below, [wR, wG, wB] = look.water;
+  const [hR, hG, hB] = look.horizon, [zR, zG, zB] = look.zenith, [bR, bG, bB] = look.below, [wR, wG, wB] = input.sea?.rgb ?? look.water;
+  const sea = input.sea, haze = input.haze;
   const farOf = (j: number, z0: number) => inv[j] <= 0 || 1 / inv[j] > z0 * 1.04 + 0.4 * ss;
   for (let py = 0; py < H; py++)
     for (let px = 0; px < W; px++) {
@@ -352,7 +364,13 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
         cG = hG + ((up ? zG : bG) - hG) * t;
         cB = hB + ((up ? zB : bB) - hB) * t;
         dist = Infinity;
+        // a level haze is the band under the horizon and thins out a few degrees over it (the mod's rim)
+        if (haze) {
+          const k = haze.amount * (up ? Math.exp(-22 * ry) : 1);
+          cR += (haze.rgb[0] - cR) * k; cG += (haze.rgb[1] - cG) * k; cB += (haze.rgb[2] - cB) * k;
+        }
       }
+      let onSea = false;
       // the water plane, translucent: more opaque with the depth of water the ray crosses, lighter at grazing angles
       if (water !== null && !under && Math.abs(ry) > 1e-9) {
         const t = (water - E[1]) / ry;           // distance along the unit ray
@@ -360,13 +378,24 @@ export function renderView(input: ViewInput, cam: Camera, w: number, h: number, 
           const fres = 0.45 * Math.pow(1 - Math.min(1, Math.abs(ry)), 4);
           const sR = wR + (hR - wR) * fres, sG = wG + (hG - wG) * fres, sB = wB + (hB - wB) * fres;
           let alpha: number;
-          if (dist === Infinity) { alpha = 0.7; cR = wR * 0.55; cG = wG * 0.55; cB = wB * 0.55; }   // open water: its deep colour under
-          else alpha = Math.min(0.88, 0.38 + 0.12 * (dist - t) * Math.abs(ry));
-          cR += (sR - cR) * alpha; cG += (sG - cG) * alpha; cB += (sB - cB) * alpha;
-          dist = t;
+          if (sea) {
+            // a sea material: matte, its own colour (when it names one), as opaque as it says whatever lies under it
+            alpha = dist === Infinity ? 1 : sea.opacity;
+            const m = sea.rgb ? [wR, wG, wB] : [sR, sG, sB];
+            cR += (m[0] - cR) * alpha; cG += (m[1] - cG) * alpha; cB += (m[2] - cB) * alpha;
+          } else {
+            if (dist === Infinity) { alpha = 0.7; cR = wR * 0.55; cG = wG * 0.55; cB = wB * 0.55; }   // open water: its deep colour under
+            else alpha = Math.min(0.88, 0.38 + 0.12 * (dist - t) * Math.abs(ry));
+            cR += (sR - cR) * alpha; cG += (sG - cG) * alpha; cB += (sB - cB) * alpha;
+          }
+          dist = t; onSea = true;
         }
       } else if (under && dist !== Infinity) {
         cR += (wR - cR) * 0.5; cG += (wG - cG) * 0.5; cB += (wB - cB) * 0.5;
+      }
+      if (haze && dist !== Infinity) {
+        const hk = haze.at(dist), k = onSea ? hk.sea : hk.land;
+        cR += (haze.rgb[0] - cR) * k; cG += (haze.rgb[1] - cG) * k; cB += (haze.rgb[2] - cB) * k;
       }
       if (fog && dist !== Infinity) {
         const k = 1 - Math.exp(-dist / fog);

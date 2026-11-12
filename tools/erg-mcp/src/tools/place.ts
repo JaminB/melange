@@ -2,36 +2,42 @@
 // oil drums, moving, turning, scaling and removing them, the level's settings (water, theme, time of day, spawn and
 // surround modes), the level script, and shipping the level (export, build, test, live packs). Placing uses the Erg
 // panel's own model (model/placing.ts, ground.ts), so a placed object is the one the palette places.
+import fs from "node:fs";
+import path from "node:path";
 import {
-  AddDetail, AddObjects, BUILTIN, Group, KNOT_RESOURCE, KNOTS, LIMITS, TEAM_KNOTS, PAD_SPACING, RemoveDetail, SetDetail, SetLevel, SetObject, THEMES, TIMES_OF_DAY,
-  catalogOf, checkScene, defaultObject, nextObjectKnot, nextTelepadGroup, objectOf, place, targetFrame,
+  AddDetail, AddObjects, AREA_KNOTS, BUILTIN, Group, KNOT_RESOURCE, KNOTS, LIMITS, TEAM_KNOTS, PAD_SPACING, RemoveDetail, SPAWN_AREA_LIMITS, SetDetail, SetLevel, SetObject, THEMES, TIMES_OF_DAY,
+  areaFirstKnot, catalogOf, checkScene, defaultObject, nextObjectKnot, nextTelepadGroup, objectOf, place, spawnsProblems, targetFrame,
   type Command, type CrateSpec, type Detail, type DetailFields, type EditorStore, type FactorySpec, type LevelSettings, type ObjectSpec, type ObjectType,
-  type TimeOfDay, type Vec3,
+  type SpawnArea, type Spawns, type TimeOfDay, type Vec3,
 } from "../core";
 import {
   DEG, commit, detailInfo, findDetail, pointOut, pointToMap, resolvePoint, unitsSchema, vec3, type PointArgs, type Units,
 } from "../lib/place-geom";
-import { resolveFile, themeFile } from "../lib/materials";
+import { landTintPreview, projectMaterials, resolveFile, themeFile, tintFor } from "../lib/materials";
 import { runTest, type TestTeam } from "../lib/place-wait";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { documentsDir } from "../oasis";
 import { automationFile, holdRoundClock, stopHold, tools as gameTools } from "./game";
 import { CAMERA_RISE, WALL_RADIUS, nearestTread, spawnWarnings, treadAt, treadWarnings } from "../lib/spawn-check";
-import { readWaterLook, waterLookProblems, withWaterLook, type WaterLook } from "../lib/water-look";
+import { dealPreview } from "../lib/spawn-deal";
+import { expandWaterPreset, hazeLook, readHaze, readSea, readWaterLook, seaLook, shaderOverrideWarnings, waterLookProblems, HAZE_EVENT, SEA_EVENT, WATER_PRESETS, withWaterLook, type HazeLook, type SeaLook, type WaterLook, type WaterShaderMod } from "../lib/water-look";
 import { checkFactory, factoryLines } from "../lib/factory-check";
 import { projectHash, readSource, storedThrow } from "../lib/project-hash";
 import { count, diff, fromSaved, mergeRuns, pairOf, summary, toSaved, type AssertRun, type SavedRun } from "../lib/assert-log";
 import { scheduleFromScript } from "../lib/flood";
 import { scriptWater } from "../lib/script-water";
+import { levelLooks, seaOpacity, seaShowsThrough, shallows } from "../lib/sea-look";
 import { rotation, slotOf } from "../lib/turns";
 import { waterBackdropWarning } from "../lib/backdrop";
 import { spansAt, waterMap } from "../lib/inspect-field";
-import { grids, tidy } from "../lib/voxel";
+import { grids, isSolid, tidy } from "../lib/voxel";
 import { ToolError, type Schema, type Tool } from "../registry";
 import type { Session } from "../session";
 import { validateExportForm } from "../../../../web/src/panels/erg/test/model";
-import { exportGate } from "../lib/ship-gate-export";
+import { exportGate, shipFeatures } from "../lib/ship-gate-export";
+import { lacking, versionOf } from "../lib/ship-gate";
+import { levelLookOf, thumbnailFromFile } from "./levellook";
 
 const pointProps: Record<string, Schema> = {
   pos: vec3("Position [x, y, z] in the level (units, default world). Give this or xz."),
@@ -177,14 +183,90 @@ async function teamReport(s: Session, units: Units, teams: number, per: number) 
     ...(waterWarnings.length ? { waterWarnings } : {}) };
 }
 
+/** The knots the spawn mode needs: WORM0-7 (knots), WORM0-15 (teams), the areas' knots (areas). */
+function neededKnots(sp: Spawns): string[] {
+  if (sp.mode === "areas") return AREA_KNOTS.slice(0, (sp.areas ?? []).reduce((n, a) => n + a.knots, 0));
+  return sp.mode === "teams" ? TEAM_KNOTS : KNOTS;
+}
+
 function spawnState(store: EditorStore, units: Units) {
   const scene = store.scene;
   const spawns = scene.details.filter((d) => d.role === "spawn").map((d) => detailInfo(store, d, units));
   const have = new Set(scene.details.map((d) => d.name));
-  return { spawnMode: scene.spawns.mode, spawns, missingKnots: (scene.spawns.mode === "teams" ? TEAM_KNOTS : KNOTS).filter((k) => !have.has(k)) };
+  // positions: every knot's place by name, whether this call moved it or not (the same numbers as placed[].pos and spawns[].pos)
+  return { spawnMode: scene.spawns.mode, spawns, positions: Object.fromEntries(spawns.map((d) => [d.name, d.pos])), missingKnots: neededKnots(scene.spawns).filter((k) => !have.has(k)) };
 }
 
-async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots" | "teams"; spawns?: SpawnArg[]; units?: Units; balance?: Balance | boolean; snap?: "tread" } & CameraArgs) {
+interface AreaArg { name: string; group: string; knots: PointArgs[]; }
+
+/** spawns.mode areas: the areas' knots are WORM<n> in area order (area 0 from WORM0); each match deals the teams over
+ * the areas from its seed (lib/spawn-deal.ts, Melange's DealAreas). */
+async function placeSpawnAreas(s: Session, a: { areas?: AreaArg[]; pattern?: string[]; opposite?: (number | string)[][]; spawns?: SpawnArg[]; balance?: unknown; units?: Units; snap?: "tread" } & CameraArgs) {
+  const store = s.store, scene = store.scene, units = a.units ?? "world";
+  if (a.spawns?.length || a.balance) throw new ToolError("mode areas places its knots per area: give areas [{name, group, knots: [{xz: [x, z]}, ...]}, ...], not spawns or balance");
+  const prev = scene.spawns.mode === "areas" ? scene.spawns : null;
+  if (!a.areas && !prev) throw new ToolError("mode areas needs areas: [{name, group, knots: [{xz: [x, z]}, ...]}, ...] (each area 1-8 knots)");
+  const areas: SpawnArea[] = a.areas ? a.areas.map((ar) => ({ name: ar.name, group: ar.group, knots: ar.knots.length })) : structuredClone(prev!.areas ?? []);
+  const index = (v: number | string, where: string) => {
+    const i = typeof v === "number" ? v : areas.findIndex((x) => x.name === v);
+    if (!Number.isInteger(i) || i < 0 || i >= areas.length) throw new ToolError(`${where}: ${JSON.stringify(v)} is not an area (give an area name or index 0-${areas.length - 1})`);
+    return i;
+  };
+  const opposite = a.opposite ? a.opposite.map((pr, k) => {
+    if (pr.length !== 2) throw new ToolError(`opposite[${k}]: give two areas [a, b]`);
+    return [index(pr[0], `opposite[${k}]`), index(pr[1], `opposite[${k}]`)] as [number, number];
+  }) : a.areas ? undefined : prev?.opposite;
+  const pattern = a.pattern ?? (a.areas ? undefined : prev?.pattern);
+  const next: Spawns = { mode: "areas", areas, ...(pattern?.length ? { pattern } : {}), ...(opposite?.length ? { opposite } : {}) };
+  const bad = spawnsProblems(next);
+  if (bad.length) throw new ToolError(bad.join("; "));
+  const cmds: Command[] = [];
+  if (JSON.stringify(scene.spawns) !== JSON.stringify(next)) cmds.push(new SetLevel({ spawnSetup: next }, "Spawn areas"));
+  const snapped: { knot: string; from: Vec3; to: Vec3; why: string[] }[] = [];
+  const placed: { area: string; knots: { knot: string; action: "added" | "moved"; dropped: boolean; pos: Vec3 }[] }[] = [];
+  (a.areas ?? []).forEach((ar, i) => {
+    const first = areaFirstKnot(areas, i), out: (typeof placed)[number]["knots"] = [];
+    ar.knots.forEach((pt, k) => {
+      const name = `WORM${first + k}`;
+      const r = resolvePoint(store, pt, units, name);
+      if (a.snap === "tread") {
+        const gs = grids(store), t = treadAt(gs, r.map);
+        if (!t.ok) {
+          const to = nearestTread(gs, r.map);
+          if (!to) throw new ToolError(`${name} (area ${ar.name}): ${t.problems.join("; ")}, and no point within 3 map units passes the tread checks: give another position`);
+          snapped.push({ knot: name, from: pointOut(r.map, units), to: pointOut(to, units), why: t.problems });
+          r.map = to;
+        }
+      }
+      const have = scene.details.find((d) => d.name === name);
+      if (have) cmds.push(new SetDetail(have.id, { pos: tidy(store.frames.toLocal(have.frame, r.map), 6) }, `Move ${name}`));
+      else {
+        const frame = targetFrame(scene, "spawn");
+        cmds.push(new AddDetail(frame, { name, resource: KNOT_RESOURCE, pos: tidy(store.frames.toLocal(frame, r.map), 6) }));
+      }
+      out.push({ knot: name, action: have ? "moved" : "added", dropped: r.dropped, pos: pointOut(r.map, units) });
+    });
+    placed.push({ area: ar.name, knots: out });
+  });
+  if (cmds.length) commit(store, cmds.length === 1 ? cmds[0] : new Group("Place spawn areas", cmds));
+  const total = areas.reduce((n, x) => n + x.knots, 0);
+  const unused = store.scene.details.filter((d) => /^WORM\d+$/.test(d.name) && Number(d.name.slice(4)) >= total).map((d) => d.name);
+  const spec = { areas, pattern: next.pattern, opposite: next.opposite };
+  return {
+    mode: "areas", changed: cmds.length > 0, ...(cmds.length ? {} : { note: "nothing to change" }),
+    areas: areas.map((x, i) => ({ index: i, name: x.name, group: x.group, knots: Array.from({ length: x.knots }, (_, k) => `WORM${areaFirstKnot(areas, i) + k}`) })),
+    pattern: next.pattern ?? [], opposite: (next.opposite ?? []).map(([p, q]) => [areas[p].name, areas[q].name]),
+    ...(placed.length ? { placed } : {}), ...(snapped.length ? { snapped } : {}),
+    deal: [2, 3, 4].map((t) => dealPreview(spec, t)),
+    dealNote: "each match deals the teams over the areas from its seed (every machine alike): the pattern's steps in order (each an unused area of its group; group:opposite the partner of an area dealt earlier), then the rest in a seeded order, the teams shuffled over them; a team's worms stand on its area's knots in slot order. deal: for 2-4 teams, the sets of areas 1000 seeds give and their share; fixed: the deal without Melange's ergSpawnDeal (the chunk's fallback), by team. A team past the areas, or a worm past its area's knots, keeps the game's random spawn.",
+    ...(unused.length ? { unusedKnots: unused, unusedNote: "WORM knots past the areas' are not used in mode areas (remove_object removes them)" } : {}),
+    ...spawnState(store, units), issues: issuesOf(store).filter((t) => /WORM|spawn/i.test(t)), warnings: cameraWarnings(store, units, a),
+  };
+}
+
+async function placeSpawnKnots(s: Session, a: { mode?: "random" | "knots" | "teams" | "areas"; spawns?: SpawnArg[]; units?: Units; balance?: Balance | boolean; snap?: "tread"; areas?: AreaArg[]; pattern?: string[]; opposite?: (number | string)[][] } & CameraArgs) {
+  if (a.mode === "areas") return placeSpawnAreas(s, a);
+  if (a.areas || a.pattern || a.opposite) throw new ToolError("areas, pattern and opposite are for mode areas");
   const store = s.store, scene = store.scene, units = a.units ?? "world";
   const mode = a.mode ?? "knots";
   const cmds: Command[] = [];
@@ -980,14 +1062,128 @@ export function teamsLine(teams?: TestTeam[]): string {
 
 const modId: Schema = { type: "string", description: "Mod id: a-z, 0-9, '-' and '_' (it becomes the pack prefix; 'ergtest' is reserved)." };
 
+/** A Test's mesh banks: the files given are copied into the project's meshes folder (which level.test loads), and the
+ * mods whose meshes the project places are checked against the banks there. Undefined when the project places none
+ * and none was given. */
+export async function testMeshBanks(s: Session, id: string, store: EditorStore, files?: string[]) {
+  const mods = [...new Set((shipFeatures(store).modMeshes ?? []).map((m) => m.slice(0, m.indexOf("."))))];
+  if (!mods.length && !files?.length) return undefined;
+  const dirs = (await (await s.levels()).list()) as { projectsDir?: unknown };
+  const root = typeof dirs.projectsDir === "string" ? dirs.projectsDir : null;
+  if (!root || !existsSync(join(root, id))) {
+    if (files?.length) throw new ToolError(root ? `the project's folder ${join(root, id)} is not on this machine: meshBanks copies into it` : "the server did not answer its projectsDir (an older Melange): meshBanks needs it");
+    return { warning: `the project places meshes of ${mods.join(", ")}: a Test draws them only when that mod is installed and on, or its bank is in the project's meshes folder (not checked: the projects folder is not readable here)` };
+  }
+  const dir = join(root, id, "meshes"), copied: string[] = [];
+  for (const f of files ?? []) {
+    if (!/\.xom$/i.test(f) || !existsSync(f)) throw new ToolError(`meshBanks: no .xom file ${f}`);
+    mkdirSync(dir, { recursive: true });
+    const to = join(dir, path.basename(f)), bytes = readFileSync(f);
+    const old = existsSync(to) ? readFileSync(to) : null;
+    if (!old || old.length !== bytes.length || old.some((v, i) => v !== bytes[i])) { writeFileSync(to, bytes); copied.push(path.basename(f)); }
+  }
+  const have = existsSync(dir) ? fs.readdirSync(dir).filter((f) => /\.xom$/i.test(f)).sort() : [];
+  const missing = mods.filter((m) => !have.some((f) => f.slice(0, f.indexOf(".")) === m));
+  const oldServer = lacking(s.conn?.build, [{ melange: "0.15.0" }]).length > 0;
+  return { dir, banks: have, ...(copied.length ? { copied } : {}),
+    ...(missing.length ? { warning: `the project places meshes of ${missing.join(", ")} and no ${missing.map((m) => `${m}.*.xom`).join(" or ")} is in its meshes folder: they will NOT draw in this Test unless that mod is installed and on in the game (test {meshBanks: ["<the bank .xom>"]} copies one there; build_rock_bank writes it)` } : {}),
+    ...(oldServer && have.length ? { serverNote: `the server is Melange ${versionOf(s.conn?.build)}: a Test loads a project's meshes folder from 0.15.0` } : {}),
+    note: "level.test loads the banks of the project's meshes folder once a game launch, before the match starts: a bank changed since needs a game restart ([erg] test: mesh bank ... in Melange.log)" };
+}
+
+/** check_sea_opacity: does the sea of the open level, as its looks stand in `script`, let the land under it show near
+ * the shore? Read-only. */
+export async function checkSeaOpacity(s: Session, script: string, a: { depth?: number; step?: number; threshold?: number; units?: "map" | "world"; gameDir?: string; limit?: number } = {}) {
+  const p = s.requireProject(), store = p.store, k = a.units === "world" ? 1 / 20 : 1, r2 = (v: number) => Math.round((v / k) * 100) / 100;
+  const water = store.scene.water.level === null ? null : store.scene.water.level / 20;
+  if (water === null) return { ok: null, summary: "the project keeps the level's own water height, which is not known here: set_water first" };
+  const looks = levelLooks(script), mods = waterShaderMods(a.gameDir ?? process.env.MELANGE_GAME_DIR).filter((m) => m.enabled !== false);
+  const gsAll = grids(store).filter((g) => g.words.some(isSolid));
+  const sh = shallows(gsAll, water, (a.depth ?? 2 / k) * k, (a.step ?? 1 / k) * k);
+  const set = await projectMaterials(s).catch(() => null);
+  const tint = set ? landTintPreview(store, set, tintFor(set))?.tint ?? tintFor(set) : null;
+  // each way the sea is drawn: by a water shader mod that honours the sea material, and by the game's own shader
+  const judge = (by: "mod" | "game") => {
+    const op = seaOpacity(looks, by), v = seaShowsThrough(sh.cells, op, by === "mod" ? looks.sea?.albedo ?? null : null, tint, a.threshold);
+    return { by, opacity: op === null ? "the theme's own (about 0.6 to 0.9: not opaque)" : op, opaque: v.opaque, shallowsShowing: v.visible.length,
+      ...(v.worst ? { worst: { at: [r2(v.worst.at[0]), r2(v.worst.at[1])], depth: r2(v.worst.depth), ...(v.worst.bed ? { bed: `#${v.worst.bed.map((c) => c.toString(16).padStart(2, "0")).join("")}` } : {}), shift: v.worst.shift } } : {}),
+      first: v.visible.slice(0, a.limit ?? 12).map((c) => ({ at: [r2(c.x), r2(c.z)], depth: r2(c.depth), material: c.material })) };
+  };
+  const honoured = mods.some((m) => m.honoursSea), drawn: ("mod" | "game")[] = looks.sea && honoured ? ["mod", "game"] : looks.sea && !mods.length ? ["mod", "game"] : ["game"];
+  const rows = (looks.sea ? ["mod", "game"] as const : ["game"] as const).map(judge);
+  const bad = rows.filter((r) => !r.opaque && r.shallowsShowing > 0);
+  const fix = "set_water_look {opaque: true} makes the plane opaque for both (the water plane's opacity 1 and, with a sea material, its opacity 1); or raise the shallows over the water or drop them deeper than `depth` (a coast rim, fillBasins)";
+  return {
+    ok: bad.length === 0,
+    summary: !sh.cells.length ? "no ground lies within the depth under the water: nothing can show through"
+      : bad.length ? `${bad.map((r) => `${r.by === "mod" ? "drawn by a water shader mod (the sea material)" : "drawn by the game's own water shader"}: ${r.shallowsShowing} shallow column${r.shallowsShowing === 1 ? "" : "s"} show through a sea of opacity ${r.opacity}`).join("; ")}`
+        : "the sea is opaque however it is drawn: the shallows do not show",
+    water: { map: Math.round(water * 100) / 100, world: Math.round(water * 2000) / 100 },
+    shallows: { count: sh.cells.length, depth: r2((a.depth ?? 2 / k) * k), step: r2((a.step ?? 1 / k) * k), wetColumns: sh.wet, dryColumns: sh.dry, units: a.units ?? "map" },
+    sea: looks.sea ?? null, planeOpacity: typeof looks.look?.NearOpacity === "number" ? looks.look.NearOpacity : null,
+    drawnBy: rows,
+    ...(mods.length ? { shaderMods: mods.map((m) => ({ mod: m.mod, honoursSea: m.honoursSea, enabled: m.enabled })) } : {}),
+    ...(bad.length ? { fix } : {}),
+    note: "a shallow is ground at or under the water within `depth` of it. A sea that is not opaque lets its colour through: what reaches the eye moves the sea's colour by the bed's colour times (1 - opacity), and a column is listed when that is `threshold` (default 10 of 255) or more. " +
+      "Opacity is the whole of it: in a Test (Dustcrown round 5) the engine drew the water with the depth mask on and an opaque sea hid everything under it, and what read as a translucent skirt round the shore from the overview was the distance haze (render_view {gameMatch} checks that)" +
+      (drawn.length === 1 && looks.sea ? "; no enabled mod of the game folder honours the sea material, so the game's own shader draws the sea there" : ""),
+  };
+}
+
+/** The enabled mods of a game folder whose client script listens for the level haze (HAZE_EVENT); null when the folder
+ * cannot be read. */
+export function hazeMods(gameDir: string | undefined): string[] | null {
+  if (!gameDir) return null;
+  const modsDir = path.join(gameDir, "Mods");
+  let enabled: Record<string, boolean> = {};
+  try { enabled = JSON.parse(fs.readFileSync(path.join(modsDir, "thumper-state.json"), "utf8")).enabled ?? {}; } catch { return null; }
+  const out: string[] = [];
+  for (const id of Object.keys(enabled).filter((k) => enabled[k]).sort()) {
+    try { if (fs.readFileSync(path.join(modsDir, id, "client", "init.lua"), "utf8").includes(HAZE_EVENT)) out.push(id); } catch { /* no client script */ }
+  }
+  return out;
+}
+
+/** The mods of a game folder that replace the water plane's shader (Mods\<id>\shaders\Water.*.glsl), whether each is
+ * enabled (Mods\thumper-state.json) and whether its shader or client script names the sea material's message. */
+export function waterShaderMods(gameDir: string | undefined): WaterShaderMod[] {
+  if (!gameDir) return [];
+  const modsDir = path.join(gameDir, "Mods"), out: WaterShaderMod[] = [];
+  let enabled: Record<string, boolean> | null = null;
+  try { enabled = JSON.parse(fs.readFileSync(path.join(modsDir, "thumper-state.json"), "utf8")).enabled ?? null; } catch { enabled = null; }
+  let ids: string[] = [];
+  try { ids = fs.readdirSync(modsDir).filter((n) => fs.statSync(path.join(modsDir, n)).isDirectory()); } catch { return []; }
+  for (const id of ids.sort()) {
+    let files: string[] = [];
+    try { files = fs.readdirSync(path.join(modsDir, id, "shaders")).filter((f) => /^Water\..*\.glsl$/i.test(f)); } catch { continue; }
+    if (!files.length) continue;
+    const texts = [...files.map((f) => path.join(modsDir, id, "shaders", f)), path.join(modsDir, id, "client", "init.lua")];
+    const honours = texts.some((f) => { try { return fs.readFileSync(f, "utf8").includes(SEA_EVENT); } catch { return false; } });
+    out.push({ mod: id, file: `shaders\\${files[0]}`, honoursSea: honours, enabled: enabled && id in enabled ? !!enabled[id] : null });
+  }
+  return out;
+}
+
 export const tools: Tool[] = [
   {
     name: "place_spawn_knots",
-    description: "Set the spawn mode and place or move the spawn knots WORM0-WORM7 (WORM0-WORM15 in mode teams). mode 'knots' makes worm i start on knot i (a match needs all 8); 'teams' makes each worm start on WORM<4 x team + its place in the team> whatever slots the match deals (team 0 on WORM0-3, team 1 on WORM4-7, team 2 on WORM8-11, team 3 on WORM12-15), so with a castle per team every team spawns in its own castle (a 2-team game needs WORM0-7, four teams WORM0-15; Test's teams sets the match's teams and worms); 'random' leaves the game's random spawns (existing knots stay but are unused). Each spawn is a position [x,y,z] or xz (dropped onto the terrain). An existing WORMn is moved, a missing one added. One undo step. Answers the spawns, the knots still missing and warnings: a spawn whose turn camera may start inside a wall (ground within wallRadius at cameraRise above the ground it stands on) or that stands on ground under the water.",
+    description: "Set the spawn mode and place or move the spawn knots WORM0-WORM7 (WORM0-WORM15 in mode teams). mode 'knots' makes worm i start on knot i (a match needs all 8); 'teams' makes each worm start on WORM<4 x team + its place in the team> whatever slots the match deals (team 0 on WORM0-3, team 1 on WORM4-7, team 2 on WORM8-11, team 3 on WORM12-15), so with a castle per team every team spawns in its own castle (a 2-team game needs WORM0-7, four teams WORM0-15; Test's teams sets the match's teams and worms); 'areas' (Melange after 0.14.1) deals each team one of `areas` per match from the match's seed, the same on every machine (pattern: the order the groups are dealt in, e.g. ['sand', 'sand:opposite', 'palace', 'sand'] gives 2 teams two opposite sand areas, 3 teams + the palace; opposite: the area pairs facing each other), and a team's worms stand on its area's knots (area 0's knots WORM0.., then area 1's; at most 8 areas, 8 knots each, 32 in all) - give areas [{name, group, knots: [{xz}, ...]}], not spawns; the answer's deal lists what 2-4 teams get over 1000 seeds; 'random' leaves the game's random spawns (existing knots stay but are unused). Each spawn is a position [x,y,z] or xz (dropped onto the terrain). An existing WORMn is moved, a missing one added. One undo step. Answers the spawns, the knots still missing and warnings: a spawn whose turn camera may start inside a wall (ground within wallRadius at cameraRise above the ground it stands on) or that stands on ground under the water.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
-        mode: { type: "string", enum: ["random", "knots", "teams"], description: "Spawn mode (default knots)." },
+        mode: { type: "string", enum: ["random", "knots", "teams", "areas"], description: "Spawn mode (default knots)." },
+        areas: {
+          type: "array", minItems: 1, maxItems: SPAWN_AREA_LIMITS.areas, description: "Mode areas: the spawn areas in order (area i's knots follow area i-1's: WORM0.. for area 0). Given, they replace the level's areas (and its pattern and opposite pairs unless given too); omitted, the level's areas stay and pattern / opposite change alone.",
+          items: { type: "object", additionalProperties: false, required: ["name", "group", "knots"], properties: {
+            name: { type: "string", description: "A label (1-24 printable characters, unique), e.g. 'SAND W'." },
+            group: { type: "string", description: "[a-z][a-z0-9_]{0,15}: the area's group for the pattern, e.g. 'sand' or 'palace'." },
+            knots: { type: "array", minItems: 1, maxItems: SPAWN_AREA_LIMITS.knotsPerArea, description: "The area's knots, in the order its team's worms take them (worm 0 of the team on the first).",
+              items: { type: "object", additionalProperties: false, properties: { ...pointProps } } } } },
+        },
+        pattern: { type: "array", maxItems: SPAWN_AREA_LIMITS.steps, items: { type: "string" },
+          description: "Mode areas: the groups in deal order; 'group:opposite' takes the opposite partner of an area dealt earlier (by `opposite`) when it is free. The areas the pattern leaves are dealt after it in a seeded order." },
+        opposite: { type: "array", maxItems: SPAWN_AREA_LIMITS.areas, items: { type: "array", minItems: 2, maxItems: 2, items: { anyOf: [{ type: "string" }, { type: "integer" }] } },
+          description: "Mode areas: pairs of areas facing each other, by name or index, e.g. [['SAND W', 'SAND E'], ['SAND N', 'SAND S']]; an area is in at most one pair." },
         spawns: {
           type: "array", maxItems: 16, description: "The knots to place or move.",
           items: { type: "object", additionalProperties: false, required: ["worm"],
@@ -1151,35 +1347,106 @@ export const tools: Tool[] = [
   },
   {
     name: "set_water_look",
-    description: "The water's look (and the land's light) in this level's matches, over the theme's: opacity (0 clear to 1 opaque: the water plane's alpha, NearOpacity), reflection (how much of the sky it reflects, ReflectionStrength), shade (SubtractColourScale: lighter or darker water), landAmbient / landDiffuse (the terrain's ambient and sun light, LightAmbient / LightDiffuse: a tint of the whole land), or any field of the theme's WaterPlaneTweaks by name in `fields` (ReflectionContrast, SpecularContrast, SpecularPower, LightSpecular [r, g, b], ...). Tried in a Test on PREHISTORIC EVENING: each takes effect in the next frame, also from a turn handler. It writes one wum.level.water{...} call (Melange 0.13+; an older game skips it) in a marked block at the top of the level script, which this tool rewrites or (clear) removes, leaving the rest of the script as it is; the game sets the fields when the match's level script starts and puts the theme's back when the match ends. The script is written at once (not an undo step). Render only: nothing the match plays changes. The theme's fog and distance haze are not here: the game's shaders (CG\\Landscape.cg, water.cg) have none, so the haze of a time of day is its sky and lighting (test {postfx: false} shows whether a post-FX mod adds more).",
+    description: "The water's look (and the land's light) in this level's matches, over the theme's (or a named `preset` of fields: sand, lava, murk): opacity (0 clear to 1 opaque: the water plane's alpha, NearOpacity), reflection (how much of the sky it reflects, ReflectionStrength), shade (SubtractColourScale: negative paler, positive darker), landAmbient / landDiffuse (the terrain's ambient and sun light, LightAmbient / LightDiffuse: a tint of the whole land), or any field of the theme's WaterPlaneTweaks by name in `fields` (ReflectionContrast, SpecularContrast, SpecularPower, LightSpecular [r, g, b], ...). Tried in a Test on PREHISTORIC EVENING: each takes effect in the next frame, also from a turn handler. It writes one wum.level.water{...} call (Melange 0.13+; an older game skips it) in a marked block at the top of the level script, which this tool rewrites or (clear) removes, leaving the rest of the script as it is; the game sets the fields when the match's level script starts and puts the theme's back when the match ends. The script is written at once (not an undo step). Render only: nothing the match plays changes. The theme's fog and distance haze are not here: the game's shaders (CG\\Landscape.cg, water.cg) have none, so the haze of a time of day is its sky and lighting (test {postfx: false} shows whether a post-FX mod adds more).",
     inputSchema: { type: "object", additionalProperties: false, properties: {
+      preset: { type: "string", enum: Object.keys(WATER_PRESETS), description: "A named look expanded to fields for the project's theme and time of day: sand (a pale opaque sea that hides what is under it: opacity 1, reflection 0, shade -1.5, no highlight; tried on ARABIAN DAY), lava (a dark opaque sea), murk (a dull near-opaque one); lava and murk are not tried anywhere yet. Explicit fields below override the preset's. The answer's preset says whether it is unverified for this theme and time of day." },
+      tint: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "With preset: [r, g, b] 0-255, a warm or cold tint of the land's light (LightDiffuse = the tint, LightAmbient = half of it). The water plane itself takes no colour (water.cg has none): its colour is the theme's texture, so the tint goes to the terrain; explicit landAmbient / landDiffuse override it." },
       opacity: { type: "number", minimum: 0, maximum: 1, description: "The water plane's alpha, NearOpacity (theme values about 0.6-0.9): 1 hides what is under the water, so a rising sea reads as a solid surface." },
       reflection: { type: "number", minimum: 0, maximum: 8, description: "ReflectionStrength: how much of the environment (sky) map the water reflects (0: the water shows its own texture only, which on PREHISTORIC EVENING turned it from grey-blue to lavender in a Test)." },
-      shade: { type: "number", minimum: -4, maximum: 4, description: "SubtractColourScale: how much of the ripple texture's darker layer is taken off the water's colour (higher: lighter, paler water; 3 with opacity 0.35 made it pale pink-white in a Test)." },
+      shade: { type: "number", minimum: -4, maximum: 4, description: "SubtractColourScale: how much of the ripple texture's darker layer is taken off the water's colour (per CG\water.cg: higher is darker, deep blue then black; negative is paler, white by -4: -1.5 gave a pale opaque sea on ARABIAN DAY)." },
       landAmbient: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "LightAmbient [r, g, b] 0-255: the land's ambient light (the landscape shader's globalAmbient, from the same tweaks): a tint of the whole terrain. In a Test red turned the island red." },
       landDiffuse: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "LightDiffuse [r, g, b] 0-255: the land's sunlight (globalDiffuse)." },
       fields: { type: "object", description: "More WaterPlaneTweaks fields by name: a number, or [r, g, b(, a)] 0-255 for a colour, [x, y, z] for a vector." },
+      sea: { type: "object", additionalProperties: false, required: ["albedo"], description: "The sea material: the water plane as a matte surface of one colour (a sand sea, lava, tar), which the game's own water shader cannot draw (its colour is the theme's blue texture: the sand preset is pale, never tan). The level script sets it with wum.level.water{Sea = {r, g, b, opacity}, SeaKeep = {reflection, foam}} (Melange 0.15; an older one skips it), Melange tells client mods with the event melange.level.sea, and a mod that replaces the water shader draws it: Sunstone 2.4+ does (opaque albedo lit by the sun, no reflection, refraction or foam unless asked). Without such a mod the fields and preset still apply, so give both: {preset: \"sand\", sea: {albedo: [214, 190, 140]}}. The answer's shaderMods lists the installed water shader mods of gameDir and whether each honours it.",
+        properties: { albedo: { type: "array", items: { type: "number", minimum: 0, maximum: 255 }, minItems: 3, maxItems: 3, description: "[r, g, b] 0-255, as the colour should read in daylight." },
+          opacity: { type: "number", minimum: 0, maximum: 1, description: "Default 1: nothing under the sea shows, and what stands in it ends at a crisp waterline." },
+          reflection: { type: "number", minimum: 0, maximum: 1, description: "How much of the shader's sky reflection is kept (default 0)." },
+          foam: { type: "number", minimum: 0, maximum: 1, description: "How much of the shader's shore foam is kept (default 0)." } } },
+      haze: { description: "The level haze: the colour the far distance and the band under the horizon fade to, {color: [r, g, b] or \"#rrggbb\", amount (0-1, default 1: how far the mod's own haze colour gives way to it), start, distance (world units; 0, the default: the mod's own range)}, or false to take the level's haze off. The game has no fog of its own; a graphics mod hazes toward the sky's horizon colour (with Sunstone a sand sea is ringed in pale blue and meets a blue band under the horizon), and with a haze the level says the colour itself: the script sets wum.level.water{Haze, HazeRange} (Melange 0.15) and Melange sends melange.level.haze, which Sunstone 2.4+ honours. Given alone it is added to the look and sea the script already has; left out, the script's haze stays.",
+        anyOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, required: ["color"], properties: {
+          color: { anyOf: [{ type: "string" }, { type: "array", items: { type: "number", minimum: 0, maximum: 255 }, minItems: 3, maxItems: 3 }] },
+          amount: { type: "number", minimum: 0, maximum: 1 }, start: { type: "number", minimum: 0, maximum: 100000 }, distance: { type: "number", minimum: 0, maximum: 100000 } } }] },
+      gameDir: { type: "string", description: "The game folder whose Mods are checked for water shader mods (default MELANGE_GAME_DIR)." },
+      opaque: { type: "boolean", description: "true: the sea hides everything under it however it is drawn: the water plane's opacity is set to 1 (NearOpacity, the game's own shader) and, with a sea material (this call's or the script's), its opacity too. Given alone it is added to the look, sea and haze the script already has. The answer's `seaOpacity` is check_sea_opacity's verdict after the change. An `opacity` or sea.opacity under 1 in the same call is refused. Default: not touched." },
       clear: { type: "boolean", description: "Remove the block: the theme's water again." },
     } },
-    async handler(s, a: { opacity?: number; reflection?: number; shade?: number; landAmbient?: number[]; landDiffuse?: number[]; fields?: WaterLook; clear?: boolean }) {
+    async handler(s, a: { preset?: string; tint?: number[]; opacity?: number; reflection?: number; shade?: number; landAmbient?: number[]; landDiffuse?: number[]; fields?: WaterLook; clear?: boolean;
+      sea?: { albedo?: number[]; opacity?: number; reflection?: number; foam?: number }; gameDir?: string;
+      haze?: { color?: number[] | string; amount?: number; start?: number; distance?: number } | boolean; opaque?: boolean }) {
       const p = s.requireProject();
-      const look: WaterLook = { ...(a.fields ?? {}) };
+      let look: WaterLook = { ...(a.fields ?? {}) };
+      if (a.opaque) {
+        if (a.clear) throw new ToolError("clear removes the block: give no opaque with it");
+        if ((a.opacity !== undefined && a.opacity < 1) || (a.sea?.opacity !== undefined && a.sea.opacity < 1) || (typeof look.NearOpacity === "number" && look.NearOpacity < 1)) throw new ToolError("opaque: true and an opacity under 1 contradict each other");
+      }
       if (a.opacity !== undefined) look.NearOpacity = a.opacity;
       if (a.reflection !== undefined) look.ReflectionStrength = a.reflection;
       if (a.shade !== undefined) look.SubtractColourScale = a.shade;
       if (a.landAmbient !== undefined) look.LightAmbient = a.landAmbient;
       if (a.landDiffuse !== undefined) look.LightDiffuse = a.landDiffuse;
-      if (a.clear && Object.keys(look).length) throw new ToolError("clear removes the block: give no fields with it");
-      if (!a.clear && !Object.keys(look).length) throw new ToolError("give opacity, reflection, shade, landAmbient, landDiffuse or fields (or clear: true)");
+      if (a.tint && !a.preset) throw new ToolError("tint goes with a preset");
+      if (a.preset && a.clear) throw new ToolError("clear removes the block: give no preset with it");
+      let preset: Record<string, unknown> | undefined;
+      if (a.preset) {
+        if (!(a.preset in WATER_PRESETS)) throw new ToolError(`preset '${a.preset}' is not one of ${Object.keys(WATER_PRESETS).join(", ")}`);
+        const d = p.store.scene.databank;
+        const e = expandWaterPreset(a.preset, a.tint, look, d.theme, d.timeOfDay);
+        look = e.look;
+        preset = { name: a.preset, theme: d.theme, timeOfDay: d.timeOfDay, verified: e.verified, ...(e.overridden.length ? { overridden: e.overridden } : {}), note: e.note };
+      }
+      if (a.clear && (Object.keys(look).length || a.sea || a.haze)) throw new ToolError("clear removes the block: give no fields with it");
+      let sea: SeaLook | null = null;
+      if (a.sea !== undefined) {
+        const sl = seaLook(a.sea ?? {});
+        if (sl.problems.length) throw new ToolError(sl.problems.join("; "));
+        sea = sl.sea!;
+      }
+      const before = (await p.erg.script()) ?? "";
+      // haze: the level's own; left out, the script's haze stays (a look set again keeps it); false takes it off. Given
+      // alone it is added to the look and sea the script has
+      if (a.haze === true) throw new ToolError("haze: {color, amount, start, distance}, or false to take it off");
+      let haze: HazeLook | null = a.clear || a.haze === false ? null : readHaze(before);
+      if (a.haze) {
+        const hl = hazeLook(a.haze);
+        if (hl.problems.length) throw new ToolError(hl.problems.join("; "));
+        haze = hl.haze!;
+      }
+      // opaque alone, like a haze alone, is added to what the script has; then the plane and the sea material are opaque
+      const opaqueOnly = !!a.opaque && !Object.keys(look).length && !sea && !a.preset;
+      const hazeOnly = (a.haze !== undefined || opaqueOnly) && !Object.keys(look).length && !sea && !a.clear;
+      if (hazeOnly) { look = readWaterLook(before) ?? {}; for (const k of ["Sea", "SeaKeep", "Haze", "HazeRange"]) delete look[k]; sea = readSea(before); }
+      if (a.opaque) { look.NearOpacity = 1; if (sea) sea = { ...sea, opacity: 1 }; }
+      if (!a.clear && !Object.keys(look).length && !sea && a.haze === undefined) throw new ToolError("give a preset, opacity, reflection, shade, landAmbient, landDiffuse or fields, a sea or a haze (or clear: true)");
       const bad = waterLookProblems(look);
       if (bad.length) throw new ToolError(bad.join("; "));
-      const before = (await p.erg.script()) ?? "";
-      const text = withWaterLook(before, a.clear ? null : look);
-      if (text === before) return { changed: false, look: readWaterLook(before), note: "the script already sets this look" };
+      const text = withWaterLook(before, a.clear ? null : look, sea, haze);
+      // the water shader mods of the game folder: a look they do not read is said here, not found in a screenshot
+      const mods = waterShaderMods(a.gameDir ?? process.env.MELANGE_GAME_DIR);
+      const shader = a.clear ? {} : { ...(mods.length ? { shaderMods: mods } : {}), ...(() => { const w = shaderOverrideWarnings(mods, look, sea); return w.length ? { warnings: w } : {}; })() };
+      const opq = a.opaque ? { seaOpacity: await checkSeaOpacity(s, text, { gameDir: a.gameDir }).then((c) => ({ ok: c.ok, summary: c.summary }), () => undefined) } : {};
+      if (text === before) return { changed: false, ...opq, look: readWaterLook(before), ...(readSea(before) ? { sea: readSea(before) } : {}), ...(readHaze(before) ? { haze: readHaze(before) } : {}), ...(preset ? { preset } : {}), ...shader, note: "the script already sets this look" };
       const r = await p.erg.saveScript(text);
       if (!r.saved) throw new ToolError(`the server did not save the script: ${r.problems.map((x) => x.message ?? String(x)).join("; ")}`);
-      return { changed: true, look: a.clear ? null : look, was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false,
-        note: a.clear ? "the block is gone: the theme's water" : "a wum.level.water{...} block at the top of the level script (Melange 0.13+): Test to see it; the game logs each field it set ([levels] water look: <container>.<field> set)" };
+      return { changed: true, ...opq, look: a.clear ? null : look, ...(sea ? { sea, seaEvent: SEA_EVENT } : {}), ...(haze ? { haze, hazeEvent: HAZE_EVENT, hazeNote: "the distance and the band under the horizon fade to this colour where a graphics mod honours it (Sunstone 2.4+); the game's own picture has no haze",
+          ...(() => { const hm = hazeMods(a.gameDir ?? process.env.MELANGE_GAME_DIR); return hm === null ? {} : hm.length ? { hazeMods: hm } : { hazeWarning: `no enabled mod of the game folder listens for ${HAZE_EVENT}: the haze will not show there (Sunstone 2.4+ draws it)` }; })() } : {}), ...(preset ? { preset } : {}), was: readWaterLook(before), problems: r.problems, syntaxChecked: r.syntaxChecked ?? false, ...shader,
+        note: a.clear ? "the block is gone: the theme's water" : "a wum.level.water{...} block at the top of the level script (Melange 0.13+): Test to see it; the game logs each field it set ([levels] water look: <container>.<field> set)" +
+          (sea ? `; the sea material goes to client mods as the event ${SEA_EVENT} (Melange 0.15), which a water shader mod that honours it draws (shaderMods)` : "") };
+    },
+  },
+  {
+    name: "check_sea_opacity",
+    description: "Does the sea let the land under it show near the shore? Reads the level's looks from its script (set_water_look: the sea material's opacity, the water plane's `opacity`) and the ground at or under the project's water within `depth` of it (the shallows), and answers for each way the sea is drawn (a water shader mod that honours the sea material, and the game's own water shader) whether it is opaque and, when it is not, the shallow columns whose bed would show: the bed's colour (the material's, tints previewed) times (1 - opacity) against the sea's colour, listed when it moves the sea's colour by `threshold` or more. ok when nothing shows however the sea is drawn. set_water_look {opaque: true} is the fix it names. The haze that washes a shoreline out from a far camera is not this: render_view {gameMatch} checks it. Read-only.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      depth: { type: "number", minimum: 0.01, description: "How far under the water ground counts as a shallow (units; default 2 map units)." },
+      step: { type: "number", minimum: 0.25, maximum: 8, description: "Column spacing (units; default 1 map unit)." },
+      threshold: { type: "number", minimum: 0, maximum: 255, description: "A column is listed when the bed moves the sea's colour by this much or more, 0-255 (default 10)." },
+      limit: { type: "integer", minimum: 0, maximum: 200, description: "Shallow columns listed per way of drawing (default 12)." },
+      gameDir: { type: "string", description: "The game folder whose Mods are checked for water shader mods (default MELANGE_GAME_DIR)." },
+      units: { type: "string", enum: ["map", "world"] },
+    } },
+    async handler(s, a: { depth?: number; step?: number; threshold?: number; units?: "map" | "world"; gameDir?: string; limit?: number }) {
+      const p = s.requireProject();
+      return checkSeaOpacity(s, (await p.erg.script().catch(() => "")) ?? "", a);
     },
   },
   {
@@ -1245,18 +1512,41 @@ export const tools: Tool[] = [
       type: "object", additionalProperties: false, required: ["modId", "name"],
       properties: { modId, name: { type: "string", description: "Display name (1-64 printable characters)." }, version: { type: "string", description: "x.y.z (default 1.0.0)." },
         mode: { type: "string", enum: ["source", "install"] }, survivor: { type: "boolean", description: "Also list the level in Survivor's Prebuilt maps (default false)." },
-        melangeRange: { type: "string", description: "spice.json melange.range (a semver range such as \">=0.14.0\"). Default: \">=0.2.0\", raised automatically to the Melange that enlarges the mesh pool when the level has more details than the vanilla pool loads (lib/ship-gate.ts); the answer's gate says which and why." } },
+        timeOfDay: { type: "string", enum: ["DAY", "EVENING", "NIGHT", "level", "none"], description: "Pin the level's time of day in every match (spice.json levels[].timeOfDay, Melange 0.15+): DAY, EVENING or NIGHT, or level (the built level's own, set_time_of_day's). Default: what set_level_look {lock: true} set for this project (the level's own time of day, by name), else no pin. none: no pin whatever set_level_look says." },
+        thumbnail: { type: "string", description: "A PNG file for the level's picture in the map menus (levels[].image, Melange 0.15+): written into the pack as thumb/<level>.png. Default: set_level_thumbnail's picture for this project, else none (the base's picture shows). \"none\": no picture whatever set_level_thumbnail says." },
+        melangeRange: { type: "string", description: "spice.json melange.range (a semver range such as \">=0.14.0\"). Default: \">=0.2.0\", raised automatically to the newest Melange a feature the level uses needs (lib/ship-gate.ts): more details than the vanilla mesh pool loads or meshes of the pack's own bank (0.14.0), spawns.mode areas (0.15.0). The answer's gate says which and why (needs), and warns when a range given here admits an older Melange than the level needs. A Melange the range does not admit quarantines the pack, and build says so." } },
     },
-    async handler(s, a: { modId: string; name: string; version?: string; mode?: "source" | "install"; survivor?: boolean; melangeRange?: string }) {
+    async handler(s, a: { modId: string; name: string; version?: string; mode?: "source" | "install"; survivor?: boolean; melangeRange?: string; timeOfDay?: string; thumbnail?: string }) {
       const p = s.requireProject();
+      // the level entry's look: export's own arguments, else what set_level_look and set_level_thumbnail set this session
+      const look = levelLookOf(p.id);
+      const tod = a.timeOfDay === "none" ? undefined : a.timeOfDay ?? (look.lock ? p.store.scene.databank.timeOfDay || "DAY" : undefined);
+      const thumb = a.thumbnail === "none" ? undefined : a.thumbnail !== undefined ? thumbnailFromFile(a.thumbnail) : look.thumbnail;
+      const image = thumb ? `thumb/${p.id}.png` : undefined;
+      const levelKeys = [...(tod ? ["timeOfDay"] : []), ...(image ? ["image"] : [])];
       const form = { modId: a.modId, name: a.name, version: a.version ?? "1.0.0", mode: a.mode ?? "source", survivor: !!a.survivor };
       const bad = validateExportForm(form);
       if (bad.length) throw new ToolError(bad.join("; "));
       const first = await savedFirst(s, "exported");
-      const gate = exportGate(p.store, a.melangeRange);
+      const gate = exportGate(p.store, a.melangeRange, levelKeys);
       const r = await (await s.client()).call<{ dir: string; files: string[]; restartRequired: boolean }>(
-        "level.export", { project: p.id, ...form, ...(gate.gated ? { melangeRange: gate.melangeRange } : {}) }, 120000);
-      return { ...r, mode: form.mode, gate, projectHash: await currentHash(s).catch(() => undefined), ...(first ? { savedFirst: true, warnings: first.warnings } : {}),
+        "level.export", { project: p.id, ...form, ...(gate.gated ? { melangeRange: gate.melangeRange } : {}), ...(tod ? { timeOfDay: tod } : {}), ...(image ? { image } : {}) }, 120000);
+      // a server older than these keys ignores them: say so instead of shipping a pack that silently lacks them
+      const levelLook: Record<string, unknown> = {};
+      if (levelKeys.length) {
+        let entry: Record<string, unknown> | undefined;
+        try { entry = (JSON.parse(fs.readFileSync(path.join(r.dir, "spice.json"), "utf8")).levels as Record<string, unknown>[]).find((l) => l.slug === p.id); } catch { entry = undefined; }
+        if (tod) levelLook.timeOfDay = entry?.timeOfDay === tod ? tod : { asked: tod, warning: "the server did not write levels[].timeOfDay (a Melange older than 0.15): no pin in this pack" };
+        if (image && thumb) {
+          if (entry?.image === image) {
+            fs.mkdirSync(path.join(r.dir, "thumb"), { recursive: true });
+            fs.writeFileSync(path.join(r.dir, image), thumb.png);
+            r.files = [...r.files, image];
+            levelLook.image = { file: image, from: thumb.from, bytes: thumb.png.length };
+          } else levelLook.image = { asked: image, warning: "the server did not write levels[].image (a Melange older than 0.15): no picture in this pack" };
+        }
+      }
+      return { ...r, mode: form.mode, gate, ...(levelKeys.length ? { levelLook } : {}), projectHash: await currentHash(s).catch(() => undefined), ...(first ? { savedFirst: true, warnings: first.warnings } : {}),
         ...(form.mode === "install" ? { note: "install exports contain modified game files: keep them on this machine" } : {}) };
     },
   },
@@ -1273,6 +1563,7 @@ export const tools: Tool[] = [
       type: "object", additionalProperties: false,
       properties: { tod: { type: "string", enum: TIMES_OF_DAY, description: "Time of day for this Test (default the project's own: set_time_of_day). The answer's `look` says what the match applied (time of day and theme) and `warnings` names a fallback." },
         waitFor: { type: "string", enum: ["playing", "armed"], description: "State to wait for (default playing)." },
+        meshBanks: { type: "array", maxItems: 8, items: { type: "string" }, description: "The project's own mesh banks for the Test (.xom files, as build_rock_bank writes: <id>.<Bank>.xom): each is copied into the project's meshes folder (<projectsDir>\\<project>\\meshes), which a Test loads before it starts (Melange 0.15: level.test loads <project>\\meshes\\*.xom once a launch; a changed bank needs a game restart), so the Test shows the detail meshes an installed pack shows. Without it the folder is used as it is; the answer's meshBanks lists the banks there and warns when the project places a mod's meshes and no bank of that mod is in the folder (they do not draw in the Test unless that mod is installed and on)." },
         timeoutSec: { type: "integer", minimum: 1, maximum: 600, description: "Stop waiting after this long (default 60)." },
         cleanMods: { type: "boolean", description: "A clean room for this Test match only: enabled content mods' sim code (entry.sim) does not run, only the level script, and the post-FX stack is off (unless postfx: true), so asserts and lighting belong to the map. Nothing is changed on disk; launch-time content (weapon clones, file overrides, shader mods, client scripts) stays. On a game build without clean rooms it refuses while such mods are enabled." },
         postfx: { type: "boolean", description: "false: the post-FX stack (every effect and code pass, like the Post-FX panel's Bypass all) is off for this Test match; true with cleanMods keeps it on. Default: on, or off with cleanMods." },
@@ -1297,7 +1588,7 @@ export const tools: Tool[] = [
     },
     async handler(s, a0: { tod?: TimeOfDay; waitFor?: "playing" | "armed"; timeoutSec?: number; cleanMods?: boolean; postfx?: boolean; restart?: boolean; simMods?: "all" | "level-only";
       expectHash?: string; source?: string; sync?: boolean; map?: string; noLevel?: boolean; turns?: number; fire?: boolean | "bazooka"; fireMs?: number; teams?: TestTeam[]; gameDir?: string;
-      suddenDeath?: boolean; baseline?: boolean; perf?: boolean | number }) {
+      suddenDeath?: boolean; baseline?: boolean; perf?: boolean | number; meshBanks?: string[] }) {
       if (a0.baseline) a0 = { map: "Multi.DinerMight", noLevel: true, fire: "bazooka", turns: 4, perf: true, ...a0 };
       if (a0.map !== undefined || a0.noLevel) {
         const b = await runBaseline(s, a0);
@@ -1334,6 +1625,7 @@ export const tools: Tool[] = [
         throw new ToolError(`content mods with sim code are enabled and would run in the Test: ${simMods.join(", ")}. This game build has no clean-room Test: disable them in the game (they apply at the next launch) for a clean run, or leave out cleanMods`);
       const first = await savedFirst(s, "tested");
       const sec = a.timeoutSec ?? 60;
+      const meshBanks = await testMeshBanks(s, p.id, p.store, a0.meshBanks).catch((e: Error) => { if (e instanceof ToolError) throw e; return undefined; });
       // the project's own time of day unless one is given: without it the frontend's (Quick Game: DAY) loads
       const db = p.store.scene.databank, tod = a.tod ?? (TIMES_OF_DAY.includes(db.timeOfDay as TimeOfDay) ? (db.timeOfDay as TimeOfDay) : undefined);
       // the game refuses a Test outside its frontend: say how to get there instead of its bare refusal
@@ -1360,7 +1652,7 @@ export const tools: Tool[] = [
         script: run.final === "playing" && !!(await (async () => (await p.erg.script()) ?? "")().catch(() => "")).trim() }) : null;
       const roundClock = a0.suddenDeath === false && run.final === "playing" ? await holdRoundClock(s).catch((e: Error) => ({ held: false, note: e.message })) : undefined;
       return { ...run, ...(roundClock ? { roundClock } : {}), ...(a0.simMods ? { isolated: a0.simMods === "level-only" ? (suppressed || !simMods.length ? "level only: no other sim mod runs in this match" : "level only was asked, but the game did not apply a clean room (cleanRoom)") : "all sim mods" } : {}),
-        ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}), ...(projectCheck ? { projectCheck } : {}),
+        ...(first ? { savedFirst: true } : {}), ...(restarted ? { restarted } : {}), ...(projectCheck ? { projectCheck } : {}), ...(meshBanks ? { meshBanks } : {}),
         ...(look ? { look: look.look, ...(look.warnings.length ? { warnings: look.warnings } : {}) } : {}),
         ...(simMods.length ? suppressed ? { simMods, simModsNote: "these mods' sim code is suppressed in this Test match (clean room)" }
           : { simMods, simModsNote: "these mods' sim code runs in this match beside the level script" } : {}),

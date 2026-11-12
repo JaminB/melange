@@ -55,7 +55,7 @@ export function toPatch(base: Scene, edited: Scene, voxels?: VoxelData, surround
     base: { key: base.base.key, source: base.base.source, sha256: { ...base.base.sha256 } },
     databank: {},
     water: { level: edited.water.level },
-    spawns: { mode: edited.spawns.mode },
+    spawns: structuredClone(edited.spawns),
     hmp: { mode: edited.hmp.mode },
     ops: [],
   };
@@ -127,7 +127,7 @@ export function toPatch(base: Scene, edited: Scene, voxels?: VoxelData, surround
 export function isEmptyPatch(p: Patch, base: Scene): boolean {
   return p.ops.length === 0 && Object.keys(p.databank ?? {}).length === 0 && (p.water?.level ?? null) === base.water.level &&
     !p.objects?.length && !p.kind?.survivor && !p.script?.present &&
-    (p.spawns?.mode ?? "random") === base.spawns.mode && (p.hmp?.mode ?? "copy") === base.hmp.mode && p.title === base.title &&
+    JSON.stringify(p.spawns ?? { mode: "random" }) === JSON.stringify(base.spawns) && (p.hmp?.mode ?? "copy") === base.hmp.mode && p.title === base.title &&
     p.stem === base.stem;
 }
 
@@ -138,7 +138,7 @@ export function applyPatch(scene: Scene, p: Patch, voxels?: Map<number, Uint32Ar
   s.title = p.title;
   for (const k of DATABANK_KEYS) if (p.databank?.[k]) s.databank[k] = p.databank[k]!;
   s.water = { level: p.water?.level ?? null };
-  s.spawns = { mode: p.spawns?.mode ?? "random" };
+  s.spawns = p.spawns ? structuredClone(p.spawns) : { mode: "random" };
   s.hmp = { mode: p.hmp?.mode ?? "copy" };
   if (p.format === PATCH_FORMAT_2 || scene.format === "erg-scene/2") {
     s.kind = { survivor: !!p.kind?.survivor };

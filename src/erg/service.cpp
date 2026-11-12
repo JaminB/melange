@@ -683,6 +683,14 @@ struct Service::Impl {
                                                          std::to_string(i / 4) + "'s worm " + std::to_string(i % 4) + ")"
                                                    : "spawns.mode is knots but there is no detail named " + k + "; export will refuse"));
             }
+        if (patch.spawns == SpawnMode::Areas)
+            for (size_t a = 0; a < patch.spawnAreas.areas.size(); ++a)
+                for (int i = 0; i < patch.spawnAreas.areas[a].knots; ++i) {
+                    const std::string k = "WORM" + std::to_string(patch.spawnAreas.First(a) + i);
+                    if (std::none_of(scene.details.begin(), scene.details.end(), [&](const Detail& d) { return d.name == k; }))
+                        warnings.arr.push_back(Str("spawns.mode is areas but there is no detail named " + k + " (area '" +
+                                                   patch.spawnAreas.areas[a].name + "' knot " + std::to_string(i) + ")"));
+                }
         std::vector<std::string> notes;
         if (!CheckObjects(scene, &notes, &err)) notes.push_back(err + "; export will refuse");
         for (auto& n : EngineWarnings(scene)) notes.push_back(n);
@@ -840,7 +848,9 @@ struct Service::Impl {
 
     // {file, base?, source?, colors?, theme?}: the record names of a level's material file, for second-material paint. A
     // pack level's own Maps\<stem>.txt is read from the pack. colors: true adds each record's colour (the average of its
-    // surface texture, looked up first in the theme's folder) and whether the texture was found ("resolved").
+    // surface texture, looked up first in the theme's folder) and whether the texture was found ("resolved"), and the same
+    // for the texture of its sides ("sideColors", "sideResolved": a record's second line) and of its underside
+    // ("bottomColors": its third).
     Reply Materials(const Json& p) {
         Reply r;
         std::string file, base, source, theme, err;
@@ -877,6 +887,18 @@ struct Service::Impl {
             }
             out.set("colors", std::move(c));
             out.set("resolved", std::move(res));
+            // a voxel's sides draw the record's second texture: a cliff of "grass" is rock
+            Json sc = Json::Arr(), sr = Json::Arr(), bc = Json::Arr();
+            preview::MaterialColors(theme, std::string(txt.begin(), txt.end()), &colors, &resolved, 1);
+            for (size_t i = 0; i < colors.size(); ++i) {
+                sc.arr.push_back(Str(colors[i]));
+                sr.arr.push_back(Json::Bool(resolved[i]));
+            }
+            preview::MaterialColors(theme, std::string(txt.begin(), txt.end()), &colors, &resolved, 2);
+            for (size_t i = 0; i < colors.size(); ++i) bc.arr.push_back(Str(colors[i]));
+            out.set("sideColors", std::move(sc));
+            out.set("sideResolved", std::move(sr));
+            out.set("bottomColors", std::move(bc));
         }
         return Ok(out);
     }
@@ -910,6 +932,13 @@ struct Service::Impl {
         if (mode != "install" && mode != "source") return Err(kBadParams, "mode must be \"install\" or \"source\"");
         const Json* surv = p.find("survivor");
         if (surv && surv->kind != Json::Kind::Bool) return Err(kBadParams, "survivor must be a boolean");
+        // optional: the level entry's pinned time of day and its menu picture (a .png the caller puts in the pack)
+        const Json* tod = p.find("timeOfDay");
+        if (tod && (tod->kind != Json::Kind::String || tod->str.empty() || !levels::manifest::ValidTimeOfDay(tod->str)))
+            return Err(kBadParams, "timeOfDay must be \"DAY\", \"EVENING\", \"NIGHT\" or \"level\"");
+        const Json* image = p.find("image");
+        if (image && (image->kind != Json::Kind::String || !levels::manifest::ValidImagePath(image->str)))
+            return Err(kBadParams, "image must be a relative path to a .png inside the mod folder");
         const Json* mrange = p.find("melangeRange");   // optional: spice.json melange.range (default >=0.2.0)
         if (mrange && (mrange->kind != Json::Kind::String || mrange->str.size() > 64 || !spice::ValidRange(mrange->str)))
             return Err(kBadParams, "melangeRange must be a semver range such as \">=0.14.0\"");
@@ -944,6 +973,9 @@ struct Service::Impl {
         spec.source = mode == "source";
         spec.chunk = luagen::Needed(scene);
         spec.survivor = surv && surv->boolean;
+        if (tod) spec.timeOfDay = tod->str;
+        if (image) spec.image = image->str;
+        spec.spawnAreas = patch.spawns == SpawnMode::Areas;
         if (mrange) spec.melangeRange = mrange->str;
         spec.patchJson = WritePatch(patch);
         spec.script = std::move(script);
@@ -980,8 +1012,19 @@ struct Service::Impl {
         std::vector<spice::Error> errs;
         if (!spice::Parse(dir, &m, &errs) || m.id != modId)
             return Err(kBadParams, "no mod '" + modId + "' with a valid spice.json" + (errs.empty() ? "" : ": " + errs.front().text));
+        // A pack this Melange is too old for is quarantined at launch (store/compat): say that here, where a builder
+        // meets it first, instead of building levels the game then refuses.
+        if (!env.melangeVersion.empty() && !m.melangeRange.empty() && spice::ValidRange(m.melangeRange) &&
+            !spice::SemverSatisfies(env.melangeVersion, m.melangeRange))
+            return Err(kBadParams, "mod '" + modId + "' needs Melange " + m.melangeRange + " and this is Melange " + env.melangeVersion +
+                                       ": the pack is quarantined until Melange is updated, so its levels are not built");
         install::Pack pack;
-        if (!install::PackFromManifest(m, dir, &pack)) return Err(kBadParams, "mod '" + modId + "' declares no valid levels");
+        if (!install::PackFromManifest(m, dir, &pack)) {
+            std::vector<levels::manifest::Error> lerrs;
+            levels::manifest::Parse(m, &lerrs);
+            return Err(kBadParams, "mod '" + modId + "' declares no valid levels" +
+                                       (m.levels.empty() ? ": its spice.json lists none" : lerrs.empty() ? "" : ": " + lerrs.front().text));
+        }
         const std::wstring root = install::LevelRoot(pack);
         // Every level is built once to check it, then built again and written one at a time, so only one level's
         // files are held at once and nothing is written unless all of them build.

@@ -32,6 +32,69 @@ export const WATER_FIELDS: Record<string, { kind: "number" | "rgb" | "rgba" | "v
 
 export type WaterLook = Record<string, number | number[]>;
 
+/** The sea material (set_water_look `sea`): what the water plane should look like as a surface of its own, which the
+ * game's CG\water.cg cannot draw (its colour is the theme's blue texture) and a water shader mod can. The level script
+ * sets it with wum.level.water{Sea = {r, g, b, opacity}, SeaKeep = {reflection, foam}} (Melange 0.15: the colour 0-255,
+ * the rest 0-1), and Melange tells client mods with the event SEA_EVENT; a mod that replaces the water shader (Sunstone
+ * 2.4+) listens for it (wum.events.on) and draws the sea as that matte colour. docs/erg.md "Sea material" is the contract. */
+export interface SeaLook { albedo: number[]; opacity: number; reflection: number; foam: number; }
+export const SEA_EVENT = "melange.level.sea";
+
+/** A sea look checked and its defaults filled in (opaque, no reflection, no foam); the problems in words. */
+export function seaLook(v: { albedo?: number[]; opacity?: number; reflection?: number; foam?: number }): { sea?: SeaLook; problems: string[] } {
+  const problems: string[] = [];
+  if (!Array.isArray(v.albedo) || v.albedo.length !== 3 || v.albedo.some((x) => typeof x !== "number" || !(x >= 0 && x <= 255))) problems.push("sea.albedo: [r, g, b] 0-255");
+  for (const k of ["opacity", "reflection", "foam"] as const)
+    if (v[k] !== undefined && !(typeof v[k] === "number" && v[k]! >= 0 && v[k]! <= 1)) problems.push(`sea.${k}: 0-1`);
+  if (problems.length) return { problems };
+  return { sea: { albedo: v.albedo!.map((x) => Math.round(x)), opacity: v.opacity ?? 1, reflection: v.reflection ?? 0, foam: v.foam ?? 0 }, problems };
+}
+
+/** The fields of the script's call for a sea look. */
+export const seaFields = (s: SeaLook) => { const n = (x: number) => String(Math.round(x * 1000) / 1000); return `Sea = {${[...s.albedo, s.opacity].map(n).join(", ")}}, SeaKeep = {${n(s.reflection)}, ${n(s.foam)}}`; };
+
+/** The call's fields back to a sea look (null: not one). */
+export function parseSea(fields: string): SeaLook | null {
+  const m = /Sea = \{([^}]*)\}, SeaKeep = \{([^}]*)\}/.exec(fields);
+  if (!m) return null;
+  const p = m[1].split(",").map((x) => Number(x.trim())), k = m[2].split(",").map((x) => Number(x.trim()));
+  if (p.length !== 4 || k.length !== 2 || [...p, ...k].some((x) => !Number.isFinite(x))) return null;
+  return { albedo: p.slice(0, 3), opacity: p[3], reflection: k[0], foam: k[1] };
+}
+
+/** The level haze (set_water_look `haze`): the colour the far distance and the band under the horizon fade to. The
+ * game has no fog of its own; a graphics mod's haze takes the sky's horizon colour (Sunstone: a pale blue ring round a
+ * sand sea, and the dome's rim below the horizon in the sky's blue). The level script sets wum.level.water{Haze = {r, g,
+ * b, amount}, HazeRange = {start, distance}} (Melange 0.15: the colour 0-255, amount 0-1, the range in world units, 0
+ * the mod's own) and Melange tells client mods with HAZE_EVENT; Sunstone 2.4+ then hazes toward that colour. */
+export interface HazeLook { color: number[]; amount: number; start: number; distance: number; }
+export const HAZE_EVENT = "melange.level.haze";
+
+/** A haze look checked and its defaults filled in (the whole of the mod's haze colour replaced, the mod's own range). */
+export function hazeLook(v: { color?: number[] | string; amount?: number; start?: number; distance?: number }): { haze?: HazeLook; problems: string[] } {
+  const problems: string[] = [];
+  let color = v.color;
+  if (typeof color === "string") color = /^#[0-9a-fA-F]{6}$/.test(color) ? [1, 3, 5].map((i) => parseInt((color as string).slice(i, i + 2), 16)) : undefined;
+  if (!Array.isArray(color) || color.length !== 3 || color.some((x) => typeof x !== "number" || !(x >= 0 && x <= 255))) problems.push("haze.color: [r, g, b] 0-255 or \"#rrggbb\"");
+  if (v.amount !== undefined && !(typeof v.amount === "number" && v.amount >= 0 && v.amount <= 1)) problems.push("haze.amount: 0-1");
+  for (const k of ["start", "distance"] as const)
+    if (v[k] !== undefined && !(typeof v[k] === "number" && v[k]! >= 0 && v[k]! <= 100000)) problems.push(`haze.${k}: 0-100000 world units`);
+  if (problems.length) return { problems };
+  return { haze: { color: (color as number[]).map((x) => Math.round(x)), amount: v.amount ?? 1, start: v.start ?? 0, distance: v.distance ?? 0 }, problems };
+}
+
+/** The fields of the script's call for a haze look. */
+export const hazeFields = (h: HazeLook) => { const n = (x: number) => String(Math.round(x * 1000) / 1000); return `Haze = {${[...h.color, h.amount].map(n).join(", ")}}, HazeRange = {${n(h.start)}, ${n(h.distance)}}`; };
+
+/** The call's fields back to a haze look (null: not one). */
+export function parseHaze(fields: string): HazeLook | null {
+  const m = /Haze = \{([^}]*)\}, HazeRange = \{([^}]*)\}/.exec(fields);
+  if (!m) return null;
+  const p = m[1].split(",").map((x) => Number(x.trim())), k = m[2].split(",").map((x) => Number(x.trim()));
+  if (p.length !== 4 || k.length !== 2 || [...p, ...k].some((x) => !Number.isFinite(x))) return null;
+  return { color: p.slice(0, 3), amount: p[3], start: k[0], distance: k[1] };
+}
+
 /** Checks a look: known fields with values of their kind. The problems in words (empty: fine). */
 export function waterLookProblems(look: WaterLook): string[] {
   const out: string[] = [];
@@ -52,17 +115,32 @@ export function waterLookProblems(look: WaterLook): string[] {
 
 const num = (v: number) => String(Math.round(v * 10000) / 10000);
 
-/** The block for a look (sorted fields, so the same look is the same text). */
-export function waterLookBlock(look: WaterLook): string {
+/** The block for a look (sorted fields, so the same look is the same text) and, with `sea`, the sea material's message,
+ * and with `haze` the level haze's. Without a sea and a haze the block is what it always was. */
+export function waterLookBlock(look: WaterLook, sea?: SeaLook | null, haze?: HazeLook | null): string {
   const fields = Object.keys(look).sort().map((k) => {
     const v = look[k];
     return `${k} = ${Array.isArray(v) ? `{${v.map(num).join(", ")}}` : num(v)}`;
   });
   return [WATER_LOOK_BEGIN,
-    "if wum.level and wum.level.water then",
-    `  local ok, why = wum.level.water{${fields.join(", ")}}`,
-    "  if not ok then wum.log.warn(\"water look: \" .. tostring(why)) end",
-    "end",
+    ...(fields.length ? [
+      "if wum.level and wum.level.water then",
+      `  local ok, why = wum.level.water{${fields.join(", ")}}`,
+      "  if not ok then wum.log.warn(\"water look: \" .. tostring(why)) end",
+      "end"] : []),
+    // a call of its own: an older Melange refuses the unknown field, and the look above is set all the same
+    ...(sea ? [
+      "-- the sea material (docs/erg.md, Melange 0.15): a water shader mod draws the sea as this matte colour",
+      "if wum.level and wum.level.water then",
+      `  local ok, why = wum.level.water{${seaFields(sea)}}`,
+      "  if not ok then wum.log.info(\"sea material: \" .. tostring(why)) end",
+      "end"] : []),
+    ...(haze ? [
+      "-- the level haze (docs/erg.md, Melange 0.15): a graphics mod hazes the distance and the horizon band toward this colour",
+      "if wum.level and wum.level.water then",
+      `  local ok, why = wum.level.water{${hazeFields(haze)}}`,
+      "  if not ok then wum.log.info(\"level haze: \" .. tostring(why)) end",
+      "end"] : []),
     WATER_LOOK_END].join("\n");
 }
 
@@ -79,12 +157,44 @@ function blockAt(script: string): [number, number] | null {
 }
 
 /** The script with the block for `look` at its top (an earlier block replaced where it was), or without one (null). */
-export function withWaterLook(script: string, look: WaterLook | null): string {
+export function withWaterLook(script: string, look: WaterLook | null, sea?: SeaLook | null, haze?: HazeLook | null): string {
   const at = blockAt(script);
   const rest = at ? script.slice(0, at[0]) + script.slice(at[1]) : script;
-  if (!look || !Object.keys(look).length) return rest;
-  const block = waterLookBlock(look) + "\n";
+  if ((!look || !Object.keys(look).length) && !sea && !haze) return rest;
+  const block = waterLookBlock(look ?? {}, sea, haze) + "\n";
   return at ? script.slice(0, at[0]) + block + script.slice(at[1]) : block + rest;
+}
+
+/** The sea material a script's block sends, or null. */
+export function readSea(script: string): SeaLook | null {
+  const at = blockAt(script);
+  if (!at) return null;
+  return parseSea(script.slice(at[0], at[1]));
+}
+
+/** The level haze a script's block sends, or null. */
+export function readHaze(script: string): HazeLook | null {
+  const at = blockAt(script);
+  if (!at) return null;
+  return parseHaze(script.slice(at[0], at[1]));
+}
+
+/** A mod that replaces the water plane's shader (shaders\Water.*.glsl), and whether its files name SEA_EVENT. */
+export interface WaterShaderMod { mod: string; file: string; honoursSea: boolean; enabled: boolean | null; }
+
+/** What the water looks of a level meet in a game folder: the mods whose water shader draws the plane instead of the
+ * game's, as warning lines. A shader mod ignores the WaterPlaneTweaks fields it does not read, and draws a sea material
+ * only when it listens for SEA_EVENT. */
+export function shaderOverrideWarnings(mods: WaterShaderMod[], look: WaterLook | null, sea: SeaLook | null): string[] {
+  const out: string[] = [];
+  for (const m of mods.filter((x) => x.enabled !== false)) {
+    const on = m.enabled === null ? "installed (its enabled state is not known)" : "enabled";
+    if (sea && !m.honoursSea) out.push(`the sea material is not drawn while ${m.mod} is ${on}: its ${m.file} replaces the water shader and does not listen for ${SEA_EVENT} (a ${m.mod} that honours the sea material, or the mod off, shows it)`);
+    else if (!sea && look && Object.keys(look).some((k) => !k.startsWith("Light")))
+      out.push(`${m.mod} is ${on} and its ${m.file} replaces the water shader: it draws its own water and may ignore these fields (NearOpacity, ReflectionStrength, SubtractColourScale: the game's CG\\water.cg reads them)` +
+        (m.honoursSea ? `; it honours the sea material (set_water_look sea: {albedo}), which says the colour outright` : ""));
+  }
+  return out;
 }
 
 /** The look a script's block sets, or null without one. */
@@ -99,4 +209,50 @@ export function readWaterLook(script: string): WaterLook | null {
     out[part[1]] = v.startsWith("{") ? v.slice(1, -1).split(",").map((x) => Number(x.trim())) : Number(v);
   }
   return out;
+}
+
+/** set_water_look presets: a named look as WaterPlaneTweaks fields, with the theme/time-of-day pairs it was seen to read
+ * right on in a Test. A preset on another pair still applies, and the answer says it is unverified there.
+ * What the fields can do (CG\water.cg, tried in a Test on ARABIAN DAY): the water's colour is the theme's blue ripple
+ * texture minus SubtractColourScale times its ripple layer (so a positive scale goes deeper blue then black, a negative one
+ * pale then white), plus ReflectionStrength times the sky map (blue by day) plus a grey highlight. water.cg reads
+ * neither SkyBlendColor nor the Light* colours, so the plane itself cannot be made warm: a sandy sea is pale and opaque,
+ * and a warm tint goes to the land's light (LightAmbient and LightDiffuse, which do colour the terrain). */
+export interface WaterPreset {
+  what: string;
+  fields: WaterLook;
+  verified: { theme: string; timeOfDay: string }[];
+}
+export const WATER_PRESETS: Record<string, WaterPreset> = {
+  sand: { what: "a pale opaque sea that hides what is under it: no sky reflection, a bleached shade, no highlight",
+    fields: { NearOpacity: 1, ReflectionStrength: 0, SubtractColourScale: -1.5, SpecularContrast: 0 },
+    verified: [{ theme: "ARABIAN", timeOfDay: "DAY" }] },
+  lava: { what: "a dark opaque sea, no reflection and no highlight (the glow is the tint on the land's light)",
+    fields: { NearOpacity: 1, ReflectionStrength: 0, SubtractColourScale: 2.5, SpecularContrast: 0 },
+    verified: [] },
+  murk: { what: "a dull near-opaque sea: a faint reflection, a darker shade, a weak highlight",
+    fields: { NearOpacity: 0.95, ReflectionStrength: 0.25, SubtractColourScale: 0.6, SpecularContrast: 0.3 },
+    verified: [] },
+};
+
+/** The land's light for a tint [r, g, b] 0-255: the sun is the tint, the ambient half of it. */
+export function tintLight(tint: number[]): WaterLook {
+  return { LightDiffuse: tint.slice(0, 3), LightAmbient: tint.slice(0, 3).map((x) => Math.round(x / 2)) };
+}
+
+/** The fields a preset expands to for a theme and time of day: the preset's, the tint's land light, then the explicit
+ * fields over both. verified says whether the preset was tried on this pair (the tint is the caller's own colour and is
+ * not part of it). */
+export function expandWaterPreset(name: string, tint: number[] | undefined, explicit: WaterLook, theme: string, timeOfDay: string):
+  { look: WaterLook; verified: boolean; overridden: string[]; note: string } {
+  const p = WATER_PRESETS[name];
+  if (!p) throw new Error(`preset '${name}' is not one of ${Object.keys(WATER_PRESETS).join(", ")}`);
+  const look: WaterLook = { ...p.fields, ...(tint ? tintLight(tint) : {}) };
+  const overridden = Object.keys(explicit).filter((k) => k in look);
+  Object.assign(look, explicit);
+  const verified = p.verified.some((v) => v.theme === theme && v.timeOfDay === timeOfDay);
+  const where = p.verified.map((v) => `${v.theme} ${v.timeOfDay}`).join(", ");
+  const note = verified ? `preset ${name} was tried in a Test on ${theme} ${timeOfDay}`
+    : `preset ${name} is UNVERIFIED on ${theme} ${timeOfDay}${where ? ` (tried on ${where})` : " (not tried in a Test anywhere yet)"}: its numbers are a starting point, Test and adjust`;
+  return { look, verified, overridden, note };
 }

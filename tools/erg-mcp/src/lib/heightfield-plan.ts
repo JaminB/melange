@@ -28,7 +28,8 @@ import {
 } from "../core";
 import { ToolError } from "../registry";
 import { PATCH_BUDGET, WORLD_PER_MAP, grids, runBytes, tidy, type Grid } from "./voxel";
-import { compile, fbm, noise2, ExprError, type Vars } from "./heightfield-expr";
+import { bindingsOf, compile, fbm, noise2, ExprError, type Vars } from "./heightfield-expr";
+import { GROUND, OUTLET, WALL, basins, fillBasins, spillLevels } from "./basins";
 
 export type Units = "map" | "world";
 
@@ -48,7 +49,10 @@ export interface MaterialRule {
   paths?: PathMask[];                       // only within a path's width of one of these polylines (roads, switchbacks)
   exclude?: Area[];                         // never in these areas (the crater floor for a grass rule)
   excludeMask?: string;                     // never where this expression is above 0
-  edge?: { depth?: number };                // the rule's own edge per corner: a voxel outside it with corners inside takes it as second material
+  // the rule's own edge per corner: a voxel outside it with corners inside takes it as second material. soft: the slope
+  // bounds are tested per corner too (a corner passes when any column that shares it does), so a column the rule's
+  // minSlope / maxSlope leaves out fades into its neighbours instead of ending on a column's square edge
+  edge?: { depth?: number; soft?: boolean };
 }
 
 /** How a feathered rule's threshold varies: dither (a 4 x 4 ordered pattern over x, z and y), noise (a hash), blue (a
@@ -121,12 +125,21 @@ export interface Crater { radius: number; depth: number; x?: number; z?: number;
 /** A part of the level in x, z (the region's units): a circle or a rectangle. */
 export interface Area { x?: number; z?: number; radius?: number; min?: [number, number]; max?: [number, number]; }
 
+/** fillBasins: every column lying more than `maxDepth` (units, default 0) under the level its basin spills at is raised
+ * to that level less maxDepth, so no closed depression deeper than maxDepth is left in the field (a pit a worm walks
+ * into and not out of: where a pad's flat ring cuts a dune trough off). What falls off the field leaves: the rectangle's
+ * edge, columns outside `clip` and columns with no ground are outlets, and so is ground at or under `outletBelow` (a
+ * level y in units: the sea). Columns inside `exclude` are walls (a structure stands there). */
+export interface BasinFill { maxDepth?: number; outletBelow?: number; }
+
 export interface FieldArgs {
   units?: Units;
   min: [number, number];                    // x, z (level coordinates in units)
   max: [number, number];
   floor: number;                            // y the columns stand on
   keepFloor?: boolean;                      // heights from floor as given, not from the lattice height it snaps to
+  maskLets?: boolean;                       // the material rules' masks see the height expression's let and fn bindings
+  floorLattice?: boolean;                   // the blocks' voxel lattice starts at floor in y (not on the Scene frame's): every top is floor + whole voxels
   expr?: string;
   grid?: number[][];                        // rows along z (row 0 at min z), columns along x
   maxHeight?: number;
@@ -150,6 +163,7 @@ export interface FieldArgs {
   blend?: boolean | Blend;                  // blend material boundaries per corner (default off)
   relax?: number;                           // passes of smoothing over the heights (default 0)
   maxGradient?: number;                     // degrees: no column steeper than this against its neighbours (default none)
+  fillBasins?: boolean | BasinFill;         // no closed basins: depressions filled to their spill height (default off)
   // internal (never from a tool's arguments): keep a column by its centre (map units) and the voxel size, after clip
   // and exclude; heightfield_drape's refine cuts the fine zone out of the coarse skin and clips the fine one to it
   keepColumn?: (mx: number, mz: number, s: number) => boolean;
@@ -236,11 +250,13 @@ export interface Field {
   floor: number;                            // floor cell (scene y)
   floorAsked: number;                       // the floor asked for, map y (the heights count from floorAsked with keepFloor)
   keepFloor: boolean;
+  yShift?: number;                          // floorLattice: the blocks' lattice stands this far (map y) over the Scene frame's
   runLimit: number;                         // runs a new block may hold: the limit less runsHeadroom
   lo: Int32Array; hi: Int32Array;           // per column [lo, hi): hi <= lo is no column
   height: Float32Array;                     // per column, voxels above the floor (after crater, cap)
   slope: Float32Array;                      // per column, degrees
   limited?: { passes: number; steepest: number };   // relax / maxGradient ran: the limiter's passes and the steepest slope left
+  basins?: Record<string, unknown>;         // fillBasins ran: what it found and raised (the plan's report)
   materialAt(col: number, y: number): number;
   /** The word a field voxel is written as: filled(materialAt), with a second material at a boundary when blend is on.
    * `layered` compares a neighbour's voxel at the same depth under its own top (a drape's skin) instead of the same y. */
@@ -274,7 +290,11 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   const s = a.voxelSize ?? 1;
   if (!validNewFrameScale(s)) throw new ToolError(`voxelSize is ${LIMITS.newFrameScale.min}-${LIMITS.newFrameScale.max} map units per voxel`);
   const kv = k / s;                         // voxels per region unit
-  const { id: sceneId, t } = sceneLattice(store);
+  const { id: sceneId, t: t0 } = sceneLattice(store);
+  // floorLattice: the y lattice passes through the floor, so a top is floor + whole voxels wherever the Scene frame sits
+  // (a 2.5-unit mesa's ledges are no longer pulled onto the Scene's 2.5 lattice); the blocks then share no frame with the
+  // level's own lattice, which reuseFrames' fill already tells apart
+  const t: Vec3 = a.floorLattice ? [t0[0], a.floor * k, t0[2]] : t0;
   if (!!a.expr === !!a.grid) throw new ToolError("give the height as either expr or grid");
   const i0 = Math.round((Math.min(a.min[0], a.max[0]) * k - t[0]) / s), i1 = Math.round((Math.max(a.min[0], a.max[0]) * k - t[0]) / s);
   const j0 = Math.round((Math.min(a.min[1], a.max[1]) * k - t[2]) / s), j1 = Math.round((Math.max(a.min[1], a.max[1]) * k - t[2]) / s);
@@ -307,9 +327,9 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   const inArea = (ar: A, x: number, z: number) => ar.circle ? (x - ar.x) ** 2 + (z - ar.z) ** 2 <= ar.r * ar.r : x >= ar.x0 && x <= ar.x1 && z >= ar.z0 && z <= ar.z1;
   // clip keeps a column whose centre is inside; exclude drops one whose four corners are: a fine field clipped to an area
   // and a coarse one excluding the same area overlap at its edge instead of leaving a gap.
-  const kept = (mx: number, mz: number) => (!clip.length || clip.some((ar) => inArea(ar, mx, mz))) &&
-    !exclude.some((ar) => [-1, 1].every((dx) => [-1, 1].every((dz) => inArea(ar, mx + (dx * s) / 2, mz + (dz * s) / 2)))) &&
-    (!a.keepColumn || a.keepColumn(mx, mz, s));
+  const clipped = (mx: number, mz: number) => clip.length > 0 && !clip.some((ar) => inArea(ar, mx, mz));
+  const excluded = (mx: number, mz: number) => exclude.some((ar) => [-1, 1].every((dx) => [-1, 1].every((dz) => inArea(ar, mx + (dx * s) / 2, mz + (dz * s) / 2))));
+  const kept = (mx: number, mz: number) => !clipped(mx, mz) && !excluded(mx, mz) && (!a.keepColumn || a.keepColumn(mx, mz, s));
   const W = (nx * s) / k, D = (nz * s) / k;
   let fn: (v: Vars) => number;
   if (a.expr !== undefined) {
@@ -377,6 +397,17 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     }
   // relax and maxGradient: the heights smoothed and slope-limited over the kept columns, then made whole voxels again
   let limited: { passes: number; steepest: number } | undefined;
+  let basinFill: Field["basins"];
+  // the columns' whole-voxel tops again from the heights, after a pass that moved them
+  const retop = (isKept: (c: number) => boolean) => {
+    for (let c = 0; c < n; c++) {
+      if (!isKept(c)) continue;
+      const a2 = c % nx, b = (c - a2) / nx, hv = Math.max(0, height[c]);
+      height[c] = hv;
+      const top = edges === "round" ? Math.round(hv) : Math.floor(hv + 1 - threshold(i0 + a2, j0 + b));
+      if (top >= 1) { lo[c] = floor - depth; hi[c] = floor + top; } else { lo[c] = 0; hi[c] = 0; }
+    }
+  };
   if ((a.relax ?? 0) > 0 || a.maxGradient !== undefined) {
     if (a.relax !== undefined && !(Number.isInteger(a.relax) && a.relax >= 0 && a.relax <= 50)) throw new ToolError("relax is 0-50 passes");
     if (a.maxGradient !== undefined && !(a.maxGradient >= 1 && a.maxGradient <= 89)) throw new ToolError("maxGradient is 1-89 degrees");
@@ -391,6 +422,35 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
       const top = edges === "round" ? Math.round(hv) : Math.floor(hv + 1 - threshold(i0 + a2, j0 + b));
       if (top >= 1) { lo[c] = floor - depth; hi[c] = floor + top; } else { lo[c] = 0; hi[c] = 0; }
     }
+  }
+  // fillBasins: after relax and maxGradient (which can close a trough off), so the surface that is built has none
+  if (a.fillBasins) {
+    const o: BasinFill = a.fillBasins === true ? {} : a.fillBasins;
+    if (o === null || typeof o !== "object") throw new ToolError("fillBasins is true or {maxDepth, outletBelow}");
+    if (o.maxDepth !== undefined && !(Number.isFinite(o.maxDepth) && o.maxDepth >= 0)) throw new ToolError("fillBasins.maxDepth is a depth of 0 or more");
+    if (o.outletBelow !== undefined && !Number.isFinite(o.outletBelow)) throw new ToolError("fillBasins.outletBelow is a level y");
+    // a height of hv voxels above the lattice floor has its ground there (keepFloor's lift is already in the heights)
+    const groundY = (hv: number) => ((floor + hv) * s + t[1]) / k;
+    const kind = new Uint8Array(n), wasKept = new Uint8Array(n);
+    for (let b = 0; b < nz; b++)
+      for (let a2 = 0; a2 < nx; a2++) {
+        const c = b * nx + a2, mx = (i0 + a2 + 0.5) * s + t[0], mz = (j0 + b + 0.5) * s + t[2];
+        wasKept[c] = hi[c] > lo[c] ? 1 : 0;
+        kind[c] = excluded(mx, mz) ? WALL
+          : a2 === 0 || b === 0 || a2 === nx - 1 || b === nz - 1 || clipped(mx, mz) || !(height[c] > 0) || (o.outletBelow !== undefined && groundY(height[c]) <= o.outletBelow + 1e-4) ? OUTLET : GROUND;
+      }
+    const before = Float32Array.from(height);
+    const maxDepth = (o.maxDepth ?? 0) * kv;
+    const spill0 = spillLevels(before, nx, nz, kind);
+    const found = basins(before, nx, nz, kind, spill0, maxDepth);
+    const r = fillBasins(height, nx, nz, kind, maxDepth);
+    const u = (v: number) => num(v / kv), at = (x: number, z: number) => [num(((i0 + x + 0.5) * s + t[0]) / k), num(((j0 + z + 0.5) * s + t[2]) / k)];
+    basinFill = { maxDepth: o.maxDepth ?? 0, ...(o.outletBelow !== undefined ? { outletBelow: o.outletBelow } : {}), basins: found.length, columnsRaised: r.raised, mostRaised: u(r.most),
+      volume: num((r.volume * s * s * s) / (k * k * k)),
+      largest: found.slice(0, 8).map((b) => ({ at: at(b.at[0], b.at[1]), columns: b.cells, depth: b.walledIn ? null : u(b.deepest), floorY: num(groundY(b.floor)), spillY: b.walledIn ? null : num(groundY(b.spill)),
+        ...(b.walledIn ? { walledIn: true } : {}) })),
+      note: "basins: closed depressions deeper than maxDepth before the fill (largest first, at the deepest column, depth and levels in the call's units); each column deeper than maxDepth under its basin's spill level was raised to that level less maxDepth; a walledIn basin (exclude areas all round it, no outlet) is left as it is" };
+    if (r.raised) retop((c) => !!wasKept[c] || (kind[c] === GROUND && height[c] !== before[c] && kept((i0 + (c % nx) + 0.5) * s + t[0], (j0 + Math.floor(c / nx) + 0.5) * s + t[2])));
   }
   for (let b = 0; b < nz; b++)
     for (let a2 = 0; a2 < nx; a2++) {
@@ -409,11 +469,19 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   // a rule's region, mask and noise, prepared once: the areas in map units, the mask compiled
   const ruleRegion = rules.map((r, i) => (r.region ? areas(r.region, `materials[${i}].region`) : null));
   const ruleExclude = rules.map((r, i) => (r.exclude ? areas(r.exclude, `materials[${i}].exclude`) : null));
+  // maskLets: the height expression's bindings stand in front of every mask, so a mask names the lets and calls the fns
+  // the heights were made of (a dune field's `let d = dunes(...)` as a crest mask) instead of repeating them
+  if (a.maskLets && a.expr === undefined) throw new ToolError("maskLets: the masks see the bindings of expr, and the height is a grid here");
+  const lets = a.maskLets ? bindingsOf(a.expr!) : "";
   const maskFn = (src: string, path: string) => {
     try {
-      return compile(src, MASK_VARIABLES) as unknown as (v: Record<string, number>) => number;
+      return compile(lets ? `${lets} ${src}` : src, MASK_VARIABLES) as unknown as (v: Record<string, number>) => number;
     } catch (e) {
-      if (e instanceof ExprError) throw new ToolError(`${path}: ${e.message}`);
+      if (e instanceof ExprError) {
+        // a place inside the mask's own text; one inside the bindings is a name both of them bind
+        const at = e.at - (lets ? lets.length + 1 : 0);
+        throw new ToolError(lets ? `${path}: ${e.message.replace(/ \(at character \d+\)$/, "")} (${at >= 0 ? `at character ${at + 1}` : "in expr's bindings, which maskLets puts in front of the mask"})` : `${path}: ${e.message}`);
+      }
       throw e;
     }
   };
@@ -421,9 +489,10 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   const ruleExcludeMask = rules.map((r, i) => (r.excludeMask === undefined ? null : maskFn(r.excludeMask, `materials[${i}].excludeMask`)));
   rules.forEach((r, i) => {
     if (r.edge && (typeof r.edge !== "object" || (r.edge.depth !== undefined && !(Number.isInteger(r.edge.depth) && r.edge.depth >= 1 && r.edge.depth <= 8))))
-      throw new ToolError(`materials[${i}].edge: {depth}, depth 1-8 voxels`);
-    if (r.edge && !(r.region || r.mask !== undefined || r.masks || r.noise || r.paths))
-      throw new ToolError(`materials[${i}].edge: the rule needs an area to have an edge (region, mask, masks, noise or paths)`);
+      throw new ToolError(`materials[${i}].edge: {depth, soft}, depth 1-8 voxels`);
+    if (r.edge && r.edge.soft !== undefined && typeof r.edge.soft !== "boolean") throw new ToolError(`materials[${i}].edge.soft is true or false`);
+    if (r.edge && !(r.region || r.mask !== undefined || r.masks || r.noise || r.paths || (r.edge.soft && (r.minSlope !== undefined || r.maxSlope !== undefined))))
+      throw new ToolError(`materials[${i}].edge: the rule needs an area to have an edge (region, mask, masks, noise or paths${r.edge.soft ? ", or a slope bound" : "; or, with soft, a slope bound"})`);
   });
   const ruleMasks = rules.map((r, i) => {
     if (r.masks === undefined) return null;
@@ -505,7 +574,19 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
   // Whether rule ri holds for the voxel at height y of column col; `at` (map x, z) moves the rule's area tests (region,
   // paths, noise, masks, exclusions) to another point of the column (a corner, for the rule's edge), the height, slope
   // and depth bounds staying the voxel's. `exposed` is the voxel's, worked out once by the caller when a rule asks.
-  const holds = (r: MaterialRule, ri: number, col: number, y: number, exp: { v?: boolean }, at?: [number, number]) => {
+  // edge.soft: the slope bounds at a column's corner (ci, cj: the lattice point) hold when they do for any of the up to
+  // four columns that share it
+  const slopeOkAt = (r: MaterialRule, ci: number, cj: number) => {
+    for (let dz = -1; dz <= 0; dz++) for (let dx = -1; dx <= 0; dx++) {
+      const a2 = ci + dx, b2 = cj + dz;
+      if (a2 < 0 || b2 < 0 || a2 >= nx || b2 >= nz) continue;
+      const c2 = b2 * nx + a2;
+      if (!(hi[c2] > lo[c2])) continue;
+      if ((r.minSlope === undefined || slope[c2] >= r.minSlope) && (r.maxSlope === undefined || slope[c2] <= r.maxSlope)) return true;
+    }
+    return false;
+  };
+  const holds = (r: MaterialRule, ri: number, col: number, y: number, exp: { v?: boolean }, at?: [number, number], corner?: [number, number]) => {
     const above = (y + 0.5 - floor) / kv, fromTop = hi[col] - 1 - y, sl = slope[col], depth = (hi[col] - y - 0.5) / kv;
     let shift = 0;
     if (r.jitter && (r.minHeight !== undefined || r.maxHeight !== undefined)) {
@@ -522,8 +603,11 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
     }
     if (r.minHeight !== undefined && above < r.minHeight + shift) return false;
     if (r.maxHeight !== undefined && above >= r.maxHeight + shift) return false;
-    if (r.minSlope !== undefined && sl < r.minSlope) return false;
-    if (r.maxSlope !== undefined && sl > r.maxSlope) return false;
+    if (corner && r.edge?.soft) { if (!slopeOkAt(r, corner[0], corner[1])) return false; }
+    else {
+      if (r.minSlope !== undefined && sl < r.minSlope) return false;
+      if (r.maxSlope !== undefined && sl > r.maxSlope) return false;
+    }
     if (r.surface !== undefined && fromTop >= r.surface) return false;
     if (r.minDepth !== undefined && depth < r.minDepth) return false;
     if (r.maxDepth !== undefined && depth >= r.maxDepth) return false;
@@ -596,13 +680,13 @@ export function sampleField(store: EditorStore, a: FieldArgs): Field {
       let bits = 0;
       for (let cz = 0; cz < 2; cz++)
         for (let cx = 0; cx < 2; cx++)
-          if (holds(r, ri, col, y, exp, [(i0 + ai + cx) * s + t[0], (j0 + bj + cz) * s + t[2]]))
+          if (holds(r, ri, col, y, exp, [(i0 + ai + cx) * s + t[0], (j0 + bj + cz) * s + t[2]], [ai + cx, bj + cz]))
             bits |= (1 << CORNER_BIT[1][cz][cx]) | (1 << CORNER_BIT[0][cz][cx]);
       if (bits) return withSecond(filled(mat), r.material, bits);
     }
     return null;
   };
-  const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, floorAsked: a.floor * k, keepFloor: !!a.keepFloor, runLimit, lo, hi, height, slope, materialAt, ...(limited ? { limited } : {}),
+  const field: Field = { k, s, t, sceneId, i0, j0, nx, nz, floor, floorAsked: a.floor * k, keepFloor: !!a.keepFloor, ...(a.floorLattice ? { yShift: t[1] - t0[1] } : {}), runLimit, lo, hi, height, slope, materialAt, ...(limited ? { limited } : {}), ...(basinFill ? { basins: basinFill } : {}),
     wordAt(col: number, y: number, layered = false) {
       if (edgeDepth && hi[col] - 1 - y < edgeDepth) {
         const e = edgeWord(col, y);
@@ -1148,7 +1232,8 @@ export function plan(store: EditorStore, a: FieldArgs, shape?: (f: Field) => voi
     region: { voxelSize: f.s, edges: a.edges ?? "round", packer: a.packer ?? "tiles", columns: f.nx * f.nz, size: [f.nx, f.nz], solidColumns: columns, map: { min: tidy(rect.min), max: tidy(rect.max) },
       world: { min: tidy(rect.min.map((v) => v * WORLD_PER_MAP) as Vec3), max: tidy(rect.max.map((v) => v * WORLD_PER_MAP) as Vec3) },
       floor: { map: num(f.floor * f.s + f.t[1]), world: toW(f.floor * f.s + f.t[1]), ...floorReport(f) }, peakVoxels: columns ? top - f.floor : 0,
-      ...(f.limited ? { slopeLimit: { relax: a.relax ?? 0, ...(a.maxGradient !== undefined ? { maxGradient: a.maxGradient } : {}), passes: f.limited.passes, steepestDegrees: Math.round(f.limited.steepest * 10) / 10 } } : {}) },
+      ...(f.limited ? { slopeLimit: { relax: a.relax ?? 0, ...(a.maxGradient !== undefined ? { maxGradient: a.maxGradient } : {}), passes: f.limited.passes, steepestDegrees: Math.round(f.limited.steepest * 10) / 10 } } : {}),
+      ...(f.basins ? { basins: f.basins } : {}) },
     voxels: { field: voxels, alreadySolid: solidVoxels, inFrames: fillVoxels, inBlocks: keptVoxels, dropped: blockVoxels - keptVoxels },
     frames: cv.fills.map((x) => ({ id: x.grid.id, name: x.grid.frame.name, ...(x.aligned ? {} : { approximate: true }), cellsFilled: x.changes.size, covers: x.covers, alreadySolid: x.solid, runs: x.runs })),
     ...(cv.skipped.length ? { framesSkipped: { count: cv.skipped.length,
@@ -1204,11 +1289,11 @@ let strokes = -1_000_000;
 
 /** Applies a plan that fits as one undo step: the frame fills, then the blocks. */
 /** `extra` adds commands to the same undo step, given the block ids and names taken so far (heightfield_drape's skin). */
-export function apply(store: EditorStore, p: Plan, extra?: (ids: Set<number>, names: Set<string>) => Command[]): { blocks: { id: number; name: string }[] } {
+export function apply(store: EditorStore, p: Plan, extra?: (ids: Set<number>, names: Set<string>) => Command[], prefix = "ergblock"): { blocks: { id: number; name: string }[] } {
   if (!p.fits) throw new ToolError(p.why ?? "the heightfield does not fit");
   const names = new Set(store.scene.frames.map((fr) => fr.name.toLowerCase()));
   const ids = new Set(blockFrames(store.scene).map((fr) => fr.id));
-  const { cmds, blocks: made } = planCommands(store, p, { ids, names });
+  const { cmds, blocks: made } = planCommands(store, p, { ids, names }, prefix);
   if (extra) cmds.push(...extra(ids, names));
   if (!cmds.length) throw new ToolError(p.why ? `nothing could be placed: ${p.why}` : "the field is already solid: nothing to place");
   const before = new Set(store.problems());
@@ -1224,7 +1309,7 @@ export function apply(store: EditorStore, p: Plan, extra?: (ids: Set<number>, na
 /** A plan's commands (the frame fills, then its blocks), not yet run: `taken` holds the block ids and names used so far
  * and gets the new ones, so several plans go into one undo step (heightfield_drape's refine: a coarse skin and a fine
  * one along the trails). */
-export function planCommands(store: EditorStore, p: Plan, taken: { ids: Set<number>; names: Set<string> }): { cmds: Command[]; blocks: { id: number; name: string }[] } {
+export function planCommands(store: EditorStore, p: Plan, taken: { ids: Set<number>; names: Set<string> }, prefix = "ergblock"): { cmds: Command[]; blocks: { id: number; name: string }[] } {
   const f = p.field;
   const cmds: Command[] = [];
   const changes = new Map<number, Map<number, [number, number]>>();
@@ -1234,15 +1319,15 @@ export function planCommands(store: EditorStore, p: Plan, taken: { ids: Set<numb
   const made: { id: number; name: string }[] = [];
   let n = 0, tmp = -1;
   for (const pc of p.kept) {
-    while (names.has(`ergblock_${n}`)) n++;
+    while (names.has(`${prefix}_${n}`)) n++;
     while (ids.has(tmp)) tmp--;
     if (tmp < -LIMITS.newFrames) throw new ToolError(`a level holds at most ${LIMITS.newFrames} added blocks`);
-    const name = `ergblock_${n}`;
+    const name = `${prefix}_${n}`;
     names.add(name);
     ids.add(tmp);
     const size: Vec3 = [pc.x1 - pc.x0, pc.y1 - pc.y0, pc.z1 - pc.z0], s = f.s;
     const frame: Frame = { id: tmp, new: true, parent: f.sceneId!, name,
-      pos: [(f.i0 + pc.x0 + size[0] / 2) * s, (pc.y0 + size[1] / 2) * s, (f.j0 + pc.z0 + size[2] / 2) * s],
+      pos: [(f.i0 + pc.x0 + size[0] / 2) * s, (pc.y0 + size[1] / 2) * s + (f.yShift ?? 0), (f.j0 + pc.z0 + size[2] / 2) * s],
       rot: [0, 0, 0], scale: [s, s, s], size, voxels: store.freshRef(), heightMap: null, folder: false };
     cmds.push(new AddFrame(store.voxels, frame, words(f, p.canvas, pc)));
     made.push({ id: tmp, name });

@@ -19,7 +19,21 @@ export type Packing = "tiles" | "parts" | "fit";
 
 /** drape: "skip" (default) leaves draped blocks (corner offsets) alone; "sheared" edits them where the game draws their
  * cells (each column moved up by its bilinear corner offset), so a ramp or tunnel cut runs through a skin. */
+/** New blocks named with this prefix (`onSkin: true`) are structures that stand on a draped skin on purpose (boulders, a
+ * kerb, a low plinth): save's drape.pokes advisory leaves them out (lib/drape-pokes). The default prefix is ergblock. */
+export const ON_SKIN_PREFIX = "ergonskin";
+/** A boulder field's blocks: on a skin on purpose (so the prefix above), and told from a mesa's by this one. */
+export const SCATTER_PREFIX = "ergonskin_scatter";
+
+/** packing "parts": a block at least this many cells whose box holds a voxel in less than a third of them is named in
+ * the notes (four wings sharing a part number packed as one 4500-cell block round an empty court). */
+export const SPARSE_BLOCK_CELLS = 512;
+
 export interface ApplyOptions { place: Place; dryRun: boolean; blockScale?: number; packing?: Packing; drape?: "skip" | "sheared"; maxBlocks?: number; maxCells?: number;
+  /** New blocks are named ergonskin_N instead of ergblock_N (ON_SKIN_PREFIX). */
+  onSkin?: boolean;
+  /** With onSkin: ergonskin_scatter_N (SCATTER_PREFIX), a boulder field's block, which lint_scatter_stairs reads. */
+  scatter?: boolean;
   /** Commands of the same undo step, applied first (sculpt_road's re-graded skin blocks). */
   extra?: Command[]; }
 
@@ -325,7 +339,7 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
       const used = new Set(store.scene.frames.map((f) => f.id)), names = new Set(store.scene.frames.map((f) => f.name.toLowerCase()));
       const ids = {
         next() { let id = -1; while (used.has(id)) id--; used.add(id); return id; },
-        name() { let n = 0; while (names.has(`ergblock_${n}`)) n++; names.add(`ergblock_${n}`); return `ergblock_${n}`; },
+        name() { const p = opt.scatter ? SCATTER_PREFIX : opt.onSkin ? ON_SKIN_PREFIX : "ergblock"; let n = 0; while (names.has(`${p}_${n}`)) n++; names.add(`${p}_${n}`); return `${p}_${n}`; },
       };
       const side = LIMITS.newFrameSide;
       const idx = (i: number, j: number, k: number) => (k * dim[0] + i) * dim[1] + j;
@@ -344,6 +358,17 @@ export function applyPlan(store: EditorStore, plan: Plan, opt: ApplyOptions): St
             const n = idx(i, j, k);
             return cells[n] && g.members.some((m) => m.part === parts[n] && i >= m.lo[0] && i <= m.hi[0] && j >= m.lo[1] && j <= m.hi[1] && k >= m.lo[2] && k <= m.hi[2]) ? cells[n] : 0;
           };
+          // a part's box that is mostly air: shapes far apart share a part number (or one part is a ring round a court)
+          const box = boxCells(g);
+          if (box >= SPARSE_BLOCK_CELLS) {
+            let held = 0;
+            for (let k = g.lo[2]; k <= g.hi[2]; k++) for (let i = g.lo[0]; i <= g.hi[0]; i++) for (let j = g.lo[1]; j <= g.hi[1]; j++) if (at(i, j, k)) held++;
+            if (held * 3 < box) {
+              const ps = [...new Set(g.members.map((m) => m.part))].sort((x, y) => x - y);
+              notes.push(`packing parts: part${ps.length > 1 ? "s" : ""} ${ps.join(", ")} ${ps.length > 1 ? "are" : "is"} one block of ${box} cells (${g.hi[0] - g.lo[0] + 1} x ${g.hi[1] - g.lo[1] + 1} x ${g.hi[2] - g.lo[2] + 1}) of which ${held} hold a voxel (${Math.round((100 * held) / box)} %): ` +
+                `the part's shapes stand apart, so its box is mostly air; give shapes that do not touch their own part number, or use packing "fit" (costOnly compares the packings)`);
+            }
+          }
 
           makeBlocks(at, g.lo, g.hi, ids, store, scene.id, blocks);
         }

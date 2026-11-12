@@ -11,6 +11,8 @@
 //             A name is bound once and used after it is bound; a function may call functions bound before it (so no
 //             recursion). For example: let cone = 44*exp(-(r/26)^2); fn bump(cx, cz, h) = h*exp(-((x-cx)^2+(z-cz)^2)/50);
 //             cone + bump(30, 0, 6) + bump(-20, 10, 4)
+//              dunes(x, z, dirDeg, wavelength, height[, asym[, seed]])  transverse dunes, 0..height (see dunes below)
+//              ridged(x, z, scale[, octaves[, seed]])  ridged multifractal noise, 0..1, sharp crest lines
 // noise2 is Perlin gradient noise, about -1..1 and 0 on whole coordinates; fbm sums octaves of it (lacunarity 2, gain 0.5).
 
 export const VARIABLES = ["x", "z", "u", "v", "r", "theta", "W", "D", "R", "pi", "e"] as const;
@@ -68,6 +70,38 @@ export function fbm(x: number, z: number, seed = 0, octaves = 4): number {
   return sum / norm;
 }
 
+/** Ridged multifractal noise at (x / scale, z / scale), 0..1: (1 - |noise|) squared per octave, so the crest lines are
+ * sharp and the hollows broad; octaves 1-8 (default 4, each half the weight and twice the frequency). */
+export function ridged(x: number, z: number, scale = 1, octaves = 4, seed = 0): number {
+  const n = Math.max(1, Math.min(8, Math.round(octaves))), k = scale > 0 ? 1 / scale : 1;
+  let sum = 0, amp = 1, freq = k, norm = 0;
+  for (let i = 0; i < n; i++) {
+    const r = 1 - Math.abs(noise2(x * freq, z * freq, seed + i * 101));
+    sum += r * r * amp;
+    norm += amp;
+    amp *= 0.5;
+    freq *= 2;
+  }
+  return Math.min(1, Math.max(0, sum / norm));
+}
+
+/** Transverse dunes, 0..height: crests run across the wind direction dirDeg (degrees from +x towards +z, the way the
+ * wind blows, so the windward slope faces back along it), one every wavelength. asym 0..1 (default 0.5) sets the
+ * profile: 0 a symmetric cosine, 1 a long windward ramp (85% of the wavelength) ending in a short slip face (15%); the
+ * crest line wanders by noise (up to about a third of a wavelength) and the crest height varies 80-100% along it, both
+ * set by seed. */
+export function dunes(x: number, z: number, dirDeg: number, wavelength: number, height: number, asym = 0.5, seed = 0): number {
+  if (!(wavelength > 0)) return 0;
+  const a = (dirDeg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+  const along = x * c + z * s, across = -x * s + z * c;
+  const t = along / wavelength + 0.35 * fbm(across / (wavelength * 1.5), along / (wavelength * 6), seed, 3);
+  const p = t - Math.floor(t);
+  const w = 0.5 + 0.35 * Math.min(1, Math.max(0, asym));
+  const shape = p < w ? 0.5 - 0.5 * Math.cos((Math.PI * p) / w) : 0.5 + 0.5 * Math.cos((Math.PI * (p - w)) / (1 - w));
+  const vary = 0.9 + 0.1 * noise2(across / (wavelength * 2.5), along / (wavelength * 8), seed + 7);
+  return height * vary * shape;
+}
+
 // ------------------------------------------------------------------ functions
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
@@ -97,6 +131,8 @@ const FUNCS: Record<string, { args: [number, number]; fn: (...a: number[]) => nu
   } },
   noise2: { args: [2, 3], fn: (x, z, seed = 0) => noise2(x, z, seed) },
   fbm: { args: [2, 4], fn: (x, z, seed = 0, octaves = 4) => fbm(x, z, seed, octaves) },
+  dunes: { args: [4, 7], fn: (x, z, dir, wl, h = 1, asym = 0.5, seed = 0) => dunes(x, z, dir, wl, h, asym, seed) },
+  ridged: { args: [3, 5], fn: (x, z, scale, oct = 4, seed = 0) => ridged(x, z, scale, oct, seed) },
   hypot: { args: [2, 3], fn: (...a) => Math.hypot(...a) },
   sign: { args: [1, 1], fn: Math.sign },
   mod: { args: [2, 2], fn: (a, b) => (b === 0 ? 0 : a - b * Math.floor(a / b)) },
@@ -129,6 +165,13 @@ function tokens(src: string): Tok[] {
 type Fn = (v: Vars) => number;
 
 const KEYWORDS = ["let", "fn"];
+
+/** The bindings of an expression: its `let` and `fn` statements up to the last ';' (every statement ends in one, and a
+ * ';' stands nowhere else), or "" when it has none. A mask compiled with them in front sees the same names. */
+export function bindingsOf(src: string): string {
+  const i = src.lastIndexOf(";");
+  return i < 0 ? "" : src.slice(0, i + 1);
+}
 
 /** Compiles an expression to a function of the column's variables, or throws an ExprError saying where it is wrong.
  * `extra` names more variables the caller puts in the object it passes (a mask's h, y and d). */

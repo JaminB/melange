@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { contactAngle, slopeBreaks, talusFan, type Ground } from "../src/lib/slope-break";
-import { MOD_MESH } from "../src/tools/meshbank";
+import { MOD_MESH, freeRot } from "../src/tools/meshbank";
 import { classifyDetail } from "../src/lib/sim-fingerprint";
 
 // a step: flat ground (y 0) for x < 0, a 60-degree face rising from x = 0 to x = 6, a flat top beyond
@@ -47,4 +47,12 @@ test("mod mesh names, and their copies are visual scenery", () => {
   const cl = classifyDetail({ name: "VISIBLE_Boulder_dtl_tint36373a", resource: "caldera.Boulder" });
   assert.equal(cl.cls, "visual");
   assert.equal(cl.role, "scenery");
+});
+
+test("freeRot: radians as given by default, degrees on request", () => {
+  assert.deepEqual(freeRot([0, 3.2, 0]), [0, 3.2, 0], "the default is unchanged: every call so far was written for it");
+  assert.deepEqual(freeRot(undefined), [0, 0, 0]);
+  const q = freeRot([0, 90, 180], "degrees");
+  assert.ok(Math.abs(q[1] - Math.PI / 2) < 1e-12 && Math.abs(q[2] - Math.PI) < 1e-12);
+  assert.deepEqual(freeRot([0, 90, 0], "radians"), [0, 90, 0]);
 });

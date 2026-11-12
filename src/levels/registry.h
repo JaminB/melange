@@ -28,6 +28,8 @@ bool RegisterTest(const char* stem, const char* title, char* err, size_t errLen)
 bool Arm(const char* key, const ArmOptions& o);
 void Disarm();
 bool Armed(char* key, size_t keyLen);
+// A pack level's levels[].timeOfDay is applied for this set-up (test::PinTod); nothing for any other level.
+void PinTimeOfDay(const char* key);
 const char* TakeOverride(const char* frontendKey);   // at level set-up: the armed key (and disarms), or nullptr
 
 // The online map gate.

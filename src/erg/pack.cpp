@@ -155,6 +155,11 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     entry.Str("source", "src/" + spec.slug + ".ergpatch.json");
     const std::string simRel = "sim/" + spec.slug + ".lua";
     if (!spec.script.empty()) entry.Str("sim", simRel);
+    if (!levels::manifest::ValidTimeOfDay(spec.timeOfDay)) return Fail(err, "timeOfDay must be DAY, EVENING, NIGHT or level");
+    if (!spec.image.empty() && !levels::manifest::ValidImagePath(spec.image))
+        return Fail(err, "image must be a relative path to a .png inside the mod folder");
+    if (!spec.timeOfDay.empty()) entry.Str("timeOfDay", spec.timeOfDay);
+    if (!spec.image.empty()) entry.Str("image", spec.image);
     jsonmini::Arr levels;
     levels.Raw(entry.End());
     for (auto& lv : existing.levels) levels.Raw(Serialize(lv));
@@ -163,7 +168,8 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     manifest.Int("spiceVersion", 1).Str("id", spec.modId).Str("version", spec.version);
     manifest.Str("name", existing.present && !existing.name.empty() ? existing.name : spec.name);
     jsonmini::Obj melange;
-    melange.Str("range", spec.melangeRange.empty() ? std::string(">=0.2.0") : spec.melangeRange);
+    const bool needs015 = spec.spawnAreas || !spec.timeOfDay.empty() || !spec.image.empty();
+    melange.Str("range", !spec.melangeRange.empty() ? spec.melangeRange : std::string(needs015 ? kAreasRange : ">=0.2.0"));
     manifest.Raw("melange", melange.End());
     manifest.Str("kind", "content").Bool("defaultEnabled", false);
     manifest.Raw("levels", levels.End());

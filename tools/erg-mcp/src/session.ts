@@ -96,14 +96,17 @@ export class Session {
 }
 
 /** A project the server refuses to load because its format is newer than the server (an older Melange.exe, such as a
- * game folder's own, refuses a patch that sets spawns.mode "teams" with `spawns.mode: must be "random" or "knots"`):
- * the error says so, and which program to run instead. Other errors pass through. */
+ * game folder's own, refuses a patch that sets spawns.mode "teams" with `spawns.mode: must be "random" or "knots"`, and
+ * one with spawn areas with `spawns: unknown key 'areas'`): the error says so, and which program to run instead. Other
+ * errors pass through. */
 export function olderServer(e: Error, build?: string): Error {
   const m = e.message ?? String(e);
   if (!/must be|unknown (key|field|op)|not allowed/i.test(m)) return e;
   const teams = /spawns\.mode: must be "?random"? or "?knots"?/.test(m);
+  const areas = /spawns: unknown key '(areas|pattern|opposite)'/.test(m) || /spawns\.mode: must be "?random"?, "?knots"? or "?teams"?/.test(m);
   return new ToolError(`the server${build ? ` (Melange ${build})` : ""} refused the project: ${m}. ` + (teams
     ? "That server is older than the project's format: this project uses team spawns (spawns.mode \"teams\", place_spawn_knots {mode: \"teams\"}), which it does not know. "
+    : areas ? "That server is older than the project's format: this project uses spawn areas (spawns.mode \"areas\", place_spawn_knots {mode: \"areas\"}), which it does not know. "
     : "The server may be older than the project's format (a newer erg-mcp wrote something it does not know). ") +
     "Connect to a Melange.exe of the same branch as this erg-mcp: set MELANGE_EXE to it for connect {gameDir}, or run that game.");
 }

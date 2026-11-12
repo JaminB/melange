@@ -40,8 +40,10 @@ std::string ThemeAtlasIndex(const std::string& theme, std::string* error = nullp
 // The colour of each record of a material file (its text, as a level's Maps\<stem>.txt or a theme's own file): the
 // average of the record's surface texture as "#rrggbb", the texture looked up in the theme's folder first (theme may be
 // ""), then anywhere. resolved[i] is false where the texture was not found; that record gets the atlas's stable fallback
-// colour. Results are kept for the process session.
-void MaterialColors(const std::string& theme, const std::string& text, std::vector<std::string>* colors, std::vector<bool>* resolved);
+// colour. Results are kept for the process session. `face` picks the record's line: 0 the top's texture (the default), 1
+// the sides' (a cliff, a wall and a mesa's strata show this one: grass01's is rock), 2 the underside's.
+void MaterialColors(const std::string& theme, const std::string& text, std::vector<std::string>* colors, std::vector<bool>* resolved,
+                    int face = 0);
 
 // Deletes least-recently-served cache files until the cache is at or under [Erg] PreviewCacheMB.
 void TrimCache();

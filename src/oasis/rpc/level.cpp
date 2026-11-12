@@ -4,9 +4,11 @@
 
 #include <shlobj.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <vector>
 
 #include "assets/crcsafe.h"
 #include "core/config.h"
@@ -119,6 +121,19 @@ bool BuildTestLevel(const std::string& project, const std::string& tod, uint64_t
     sim.knots = simbridge::LevelKnots(*stem, chunk);
     simbridge::SetTestLevelSim(sim);
     return true;
+}
+
+std::vector<std::pair<std::string, std::string>> ProjectMeshBanks(const std::string& project) {
+    namespace fs = std::filesystem;
+    std::vector<std::pair<std::string, std::string>> out;
+    std::error_code ec;
+    for (fs::directory_iterator it(fs::path(ProjectsDir()) / game::Widen(project) / L"meshes", ec), end; !ec && it != end && out.size() < 8; it.increment(ec)) {
+        if (!it->is_regular_file(ec) || it->path().extension() != L".xom") continue;
+        const std::string file = game::Narrow(it->path().wstring()), name = game::Narrow(it->path().filename().wstring());
+        out.emplace_back(file, name.substr(0, name.find('.')));
+    }
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 void InstallLevels() {

@@ -52,6 +52,7 @@ struct Patch {
     DatabankPatch databank;
     std::optional<double> water;
     SpawnMode spawns = SpawnMode::Random;
+    SpawnAreas spawnAreas;                            // spawns.mode areas only
     HmpMode hmp = HmpMode::Copy;
     std::vector<Op> ops;
     bool survivor = false;
