@@ -1,4 +1,4 @@
-// Dustcrown's detail layer, round 1: the passes detail.mjs runs after build.mjs. Every one writes only through erg-mcp's
+// Dustcrown's detail layer, rounds 1 and 2: the passes detail.mjs runs after build.mjs. Every one writes only through erg-mcp's
 // sim-neutral channels (scenery copies: place_mod_mesh of the one mesh bank in meshes/bank.mjs, copy_base_details of the
 // ARABIAN base's own props), so sim_fingerprint cannot move; detail.mjs proves it after each pass. Units are map units.
 //
@@ -7,7 +7,10 @@
 // round 4), the boulder fields keep their own pieces, and nothing stands in the sea. The dressing is graded (a big block,
 // a ring of middling ones, litter), seated on the real surface by surface_sample, then lint_contact / lint_support take out
 // what hangs off a steep face.
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { MOD } from "./meshes/bank.mjs";
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 // ---- the map's layout, as build.mjs sets it out (copied: build.mjs is a script, not a module) ----
 export const TAG = "dtl1";                                  // the layer's own name tag (build.mjs's boulder meshes are _dtl)
@@ -61,6 +64,25 @@ async function put(ctx, byMesh, tag = TAG) {
   return placed;
 }
 const piece = (xz, sc, rnd, o = {}) => ({ xz: [r1(xz[0]), r1(xz[1])], rot: o.rot ?? [0, Math.round(rnd() * 360), 0], scale: Array.isArray(sc) ? sc.map(r2) : [r2(sc), r2(sc * (0.85 + rnd() * 0.25)), r2(sc)] });
+
+// ---- pass: palette (round 2). The palace and the rock in three desaturated sandstone tones instead of one saturated lemon
+// (tint_landscape, a visual channel: each texture's mean becomes the colour, given as the colour to SEE). The colours below are
+// the ones ASKED, calibrated in the game (Sunstone 2.4.0, DAY): the stone asks #e0bc98 to play the ochre #cb9a5a (asking #c89a5e
+// played an orange #bb6221, asking #d8c8a8 a khaki #c3ab6d; the grade file's fit, fitted on sand, extrapolates badly here).
+// Warm ochre for the walls (the stone, which the mesas share), a burnt sienna
+// for the stepped base and the lower courses (sandy plaster), pale bleached limestone for the caps and merlons (the gold,
+// its edging a shade darker and matte), a muted copper green for the blue mosaic (the Dome meshes cover the domes; this
+// takes any edge that shows), a warm tan for the courts' paving, a rust for the mesas' strata (the dark yellow plaster). ----
+export const PALACE_TINTS = [
+  { material: "stone", faces: "all", color: "#e0bc98" }, { material: "sandy-plaster", faces: "all", color: "#a88058" },
+  { material: "Gold", faces: "all", color: "#e2d2b0" }, { material: "GoldEdging", faces: "all", color: "#b09468" },
+  { material: "BlueMosaic1", faces: "all", color: "#6f8f7a" }, { material: "StarMosaic", faces: "all", color: "#b08a5a" },
+  { material: "darkyellowplaster", faces: "all", color: "#8e5a34" },
+];
+export async function palettePass(ctx) {
+  const r = await ctx.call("tint_landscape", { theme: "ARABIAN", carrier: "theme", colorSpace: "srgb", tints: PALACE_TINTS, grade: path.join(HERE, "grade-sunstone-day-shade.json") });
+  return { tints: (r.json?.tints ?? []).map((t) => `${t.from}: ${t.color}`) };
+}
 
 // ---- pass: mesas. A graded tumble at each mesa's foot (a block, a ring of middling stones, litter) and, on the refuges'
 // tops, a few low boulders along the rim: the tops are where a worm stands, so they are small and keep the middle clear. ----
@@ -128,6 +150,7 @@ export async function hoodooPass(ctx) {
     { const a = yaw / DEG + 5.0, d = 2.8 + rnd(); add("Heap", piece([gx + Math.cos(a) * d, gz + Math.sin(a) * d], 0.9 + rnd() * 0.4, rnd)); }
   }
   const placed = await put(ctx, byMesh);
+  ctx.hoodoos = picks.map((p) => [p[0], p[1]]);
   return { groups: picks.length, picks: picks.map((p) => [p[0], p[1]]), placed };
 }
 
@@ -151,7 +174,7 @@ export async function litterPass(ctx) {
   return { groups: picks.length, placed: await put(ctx, byMesh) };
 }
 
-// ---- pass: flora. Dry clumps of three or four Spikes (stretched thin shards in a straw palette) in the dune troughs, sparse:
+// ---- pass: flora. Dead thorn scrub: clumps of six to nine Spikes (stretched thin shards, a dark grey-brown) in the dune troughs, sparse:
 // a dune desert's few tough plants. They stand about 1.4-2.2 high (a worm is 0.75) and never on a walk or a pad. ----
 export async function floraPass(ctx) {
   const rnd = mulberry(4404), byMesh = {};
@@ -163,43 +186,53 @@ export async function floraPass(ctx) {
   const ok = cand.filter((c, i) => s[i] && s[i].slope < 16 && s[i].y > 4.2 && s[i].y < 7.4);
   const pool = ok.map((c) => ({ c, k: rnd() })).sort((a, b) => a.k - b.k).map((o) => o.c);
   const picks = [];
-  for (const c of pool) { if (picks.length >= 26) break; if (picks.every((p) => Math.hypot(p[0] - c[0], p[1] - c[1]) >= 11)) picks.push(c); }
+  for (const c of pool) { if (picks.length >= 40) break; if (picks.every((p) => Math.hypot(p[0] - c[0], p[1] - c[1]) >= 9)) picks.push(c); }
   for (const [cx, cz] of picks) {
-    const n = 5 + (rnd() < 0.5 ? 1 : 0);
+    const n = 6 + Math.floor(rnd() * 4);
     for (let i = 0; i < n; i++) {
-      const a = rnd() * 6.28, d = i === 0 ? 0 : 0.3 + rnd() * 0.5, h = i === 0 ? 1.1 + rnd() * 0.35 : 0.6 + rnd() * 0.5;
+      const a = rnd() * 6.28, d = i === 0 ? 0 : 0.3 + rnd() * 0.8, h = i === 0 ? 1.0 + rnd() * 0.35 : 0.5 + rnd() * 0.6;
       add("Spike", { xz: [r1(cx + Math.cos(a) * d), r1(cz + Math.sin(a) * d)], rot: [r1((rnd() - 0.5) * 26), Math.round(rnd() * 360), r1((rnd() - 0.5) * 26)], scale: [r2(0.3 + rnd() * 0.14), r2(h), r2(0.3 + rnd() * 0.14)] });
     }
   }
   return { clumps: picks.length, placed: await put(ctx, byMesh) };
 }
 
-// ---- pass: palace. Banners hung from the curtain's gate faces and the third plinth's lip (ARABIAN15's red cushion, stretched
-// into a tapestry and stood on its edge), arrow slits on the towers and the Crown (the Slit mesh: a dark block squashed flat), and
-// gold obelisks at the corners of plinths 1 and 2. All stand on faces of the palace's voxels at the heights build.mjs gave
-// them (curtain 24-33, plinth risers 12/18/24, towers 24-48, the Crown 40.5-55.5). ----
+// ---- pass: palace (round 2). The judge's list for a palace that reads scorched and grand, not a toy: smooth copper-green onion
+// domes over the four towers' voxel domes (the Dome mesh, a build_rock_bank `lathe`, hides their stair-steps and their blue and
+// gold) and a tall tapering onion over the Crown's merlon ring (the tallest silhouette from every side), eight faded banners (the gates'
+// flanks and the keep's four faces, none on the plinths), squat stone pylons at the plinths' corners in the wall's stone,
+// buttress pilasters along the curtain, a window rhythm on the keep and the Crown, arrow slits on the towers. All stand on faces
+// of the palace's voxels at the heights build.mjs gave them (curtain 24-34, plinth risers 12/18/24, keep to 40, towers 24-46,
+// onion domes to 53.5, the Crown 40.5-55.5). ----
+const BANNER_TINT = "a04a38";                               // a dusty crimson: the cushion's red, faded by the sun
 export async function palacePass(ctx) {
   const rnd = mulberry(5505), byMesh = {};
   const add = (name, p) => (byMesh[name] ??= []).push(p);
+  // a mesh's foot: y of `pos` that puts its lowest point at `y` when scaled by `sy`
+  const foot = (name, y, sy) => r2(y - ctx.boxes[name].min[1] * sy);
   // faces: [normal x, normal z, tangent x, tangent z, gate offset along the tangent]
   const faces = [
     { n: [0, -1], u: [1, 0], g: 13 }, { n: [1, 0], u: [0, 1], g: 13 },       // N (gate at x 13), E (gate at z 13)
     { n: [0, 1], u: [1, 0], g: -13 }, { n: [-1, 0], u: [0, 1], g: -13 },     // S (x -13), W (z -13)
   ];
-  // a tapestry is the cushion (1 x 0.34 x 0.96, thin axis y) turned about x so its thin axis is horizontal, then about y to
-  // face out of the wall. The rotation's sign is checked against a render (detail1/palace-*.png)
+  const yawOf = (n) => Math.atan2(n[0], n[1]) * DEG;
+  // banners: the cushion (1 x 0.34 x 0.96, thin axis y) turned about x so its thin axis is horizontal, then about y to face out
+  // of the wall (the rotation was checked against round 1's renders). One on each gate's flank (the gate's opening runs to the
+  // lintel at 30, so a banner over it would hang from the merlons), one on each of the keep's faces over the wings' roofs
   const banners = [];
   for (const f of faces) {
-    const yaw = Math.atan2(f.n[0], f.n[1]) * DEG;
-    // the curtain: 3 a face, away from the gate; hung from the wall-walk (y 32) 5.5 long, 2.4 wide, on the outer face (25.5)
-    for (const t of (f.g > 0 ? [-17, -7, 3] : [17, 7, -3])) {
-      banners.push({ x: f.n[0] * 25.75 + f.u[0] * t, z: f.n[1] * 25.75 + f.u[1] * t, y: 26.6, yaw, w: 2.4, h: 5.4 });
-    }
-    // the third plinth's riser (face at 30, y 18-24): 4 a face, off the niches (13.5), 4.6 long from the lip (24)
-    for (const t of [-20, -7, 7, 20]) banners.push({ x: f.n[0] * 30.15 + f.u[0] * t, z: f.n[1] * 30.15 + f.u[1] * t, y: 19.2, yaw, w: 2.8, h: 4.6 });
+    const yaw = yawOf(f.n);
+    banners.push({ x: f.n[0] * 25.75 + f.u[0] * (f.g - Math.sign(f.g) * 8.5), z: f.n[1] * 25.75 + f.u[1] * (f.g - Math.sign(f.g) * 8.5), y: 25.2, yaw, w: 2.2, h: 5.2 });
+    banners.push({ x: f.n[0] * 12.2, z: f.n[1] * 12.2, y: 34.8, yaw, w: 2.6, h: 4.8 });
   }
-  const copies = banners.map((b) => ({ id: 8, pos: [r1(b.x), r1(b.y + b.h / 2), r1(b.z)], rot: [90, r1(b.yaw), 0], scale: [r2(b.w), 1, r2(b.h / 0.96)] }));
+  const copies = banners.map((b) => ({ id: 8, pos: [r1(b.x), r1(b.y + b.h / 2), r1(b.z)], rot: [90, r1(b.yaw), 0], scale: [r2(b.w), 1, r2(b.h / 0.96)], tint: BANNER_TINT }));
   const rb = await ctx.call("copy_base_details", { base: "Multi.CarpetCapers", units: "map", tag: PALACE_TAG, copies });
+  // domes: the towers' onion domes stand from 46 to 53.5 (radius 4.5 in 0.75 voxels), so the mesh (radius 5 high 7.5 as the bank
+  // builds it) is a little wider and taller; the Crown's tall one (its voxel cap is inside it) tapers from 5.6 to a point at about 68
+  const domes = [];
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) domes.push({ x: sx * 24.75, z: sz * 24.75, y: 45.8, s: [1.07, 1.02, 1.07] });
+  domes.push({ x: 0, z: 0, y: 54.6, s: [1.12, 1.8, 1.12] });
+  for (const d of domes) add("Dome", { pos: [d.x, foot("Dome", d.y, d.s[1]), d.z], rot: [0, Math.round(rnd() * 360), 0], scale: d.s });
   // arrow slits: the towers' cardinal outward faces (flat at 3.75 from the axis) at three heights, the Crown's four faces at two
   const slits = [];
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
@@ -209,13 +242,73 @@ export async function palacePass(ctx) {
   for (const [nx, nz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) for (const y of [44.2, 49.6]) for (const t of [-2.4, 2.4]) {
     slits.push({ x: nx * 6.03 + (nz ? t : 0), z: nz * 6.03 + (nx ? t : 0), y, nx, nz });
   }
+  // the keep's windows: a rhythm of four to a face above the wings' roofs, either side of the banner (the keep's faces at 12)
+  for (const [nx, nz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) for (const t of [-8.6, -4.8, 4.8, 8.6]) {
+    slits.push({ x: nx * 12.05 + (nz ? t : 0), z: nz * 12.05 + (nx ? t : 0), y: 36.4, nx, nz });
+  }
   for (const s of slits) add("Slit", { pos: [r1(s.x), r1(s.y), r1(s.z)], rot: [0, r1(Math.atan2(s.nx, s.nz) * DEG), 0], scale: [0.26, 0.85, 0.1] });
-  // obelisks: the corners of plinth 2's ledge (corner 33, top 18) and plinth 1's (corner 39, top 12)
-  const obel = [];
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) { obel.push({ x: sx * 33, z: sz * 33, y: 18, h: 5.4 }); obel.push({ x: sx * 39, z: sz * 39, y: 12, h: 4.2 }); }
-  for (const o of obel) add("Obelisk", { pos: [o.x, o.y, o.z], rot: [0, Math.round(rnd() * 360), 0], scale: [1.0, r2(o.h / 1.32), 1.0] });
+  // pylons: squat stone blocks (the Boulder, stretched a little tall) at the corners of plinth 2's ledge (corner 33, top 18) and
+  // plinth 1's (corner 39, top 12), in the stone of the wall: the judge read round 1's gold cones as teeth
+  const pylons = [];
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) { pylons.push({ x: sx * 33, z: sz * 33, y: 18, h: 3.4 }); pylons.push({ x: sx * 39, z: sz * 39, y: 12, h: 2.8 }); }
+  for (const p of pylons) { const sy = p.h / 1.9; add("Boulder", { pos: [p.x, foot("Boulder", p.y, sy), p.z], rot: [0, 45 + r1((rnd() - 0.5) * 8), 0], scale: [0.9, r2(sy), 0.9] }); }
+  // pilasters: buttress columns on the curtain's outer faces every 9 (the corners are the towers, the gate's jambs stay clear):
+  // 2 wide, standing 0.75 out of the wall from the terrace (24) to under the merlons (31.4)
+  let pilasters = 0;
+  for (const f of faces) for (const t of [-18, -9, 0, 9, 18]) {
+    if (Math.abs(t - f.g) < 6.5) continue;
+    const sy = 7.4 / 1.9, off = 26.1;
+    add("Boulder", { pos: [r1(f.n[0] * off + f.u[0] * t), foot("Boulder", 24, sy), r1(f.n[1] * off + f.u[1] * t)], rot: [0, r1(yawOf(f.n) + (rnd() - 0.5) * 6), 0], scale: [0.66, r2(sy), 0.5] });
+    pilasters++;
+  }
   const placed = await put(ctx, byMesh, PALACE_TAG);
-  return { banners: copies.length, bannersPlaced: rb.json?.placed ?? copies.length, slits: slits.length, obelisks: obel.length, placed };
+  return { banners: copies.length, bannersPlaced: rb.json?.placed ?? copies.length, domes: domes.length, slits: slits.length, pylons: pylons.length, pilasters, placed };
+}
+
+// ---- pass: dry (round 2). The cues a water-starved desert gives: bone piles near the sand spawns and the palace's foot (the
+// Bone mesh, a lathe with knobbed ends, lying: three or four crossed in a pile; the base's D07_04 "skulls" are white clouds in the
+// game), dry stone wells (a ring of stone blocks round a
+// dark disc: the water went long ago, with a clay urn beside it), all low, off the pads and the walks (keepOut) and clear of the
+// hoodoos. Round 2 tried cracked hardpan as thin dark seams (a flat Slit): they read as charred planks, so it is not placed. ----
+export async function dryPass(ctx) {
+  const rnd = mulberry(6606), byMesh = {};
+  const add = (name, p) => (byMesh[name] ??= []).push(p);
+  const out = { bones: 0, wells: 0, urns: 0, wellAt: [], boneAt: [] };
+  // gentle open ground, a grid of candidates (x, z) with its height and slope, kept off the pads, the walks and the palace ring
+  const cand = [];
+  for (let x = -92; x <= 92; x += 4) for (let z = -92; z <= 92; z += 4) { const px = x + (rnd() - 0.5) * 3, pz = z + (rnd() - 0.5) * 3; if (!keepOut(px, pz, 3)) cand.push([px, pz]); }
+  const s = await sample(ctx.call, cand);
+  const ok = cand.map((c, i) => ({ x: c[0], z: c[1], y: s[i]?.y, slope: s[i]?.slope })).filter((c) => c.slope < 14 && c.y > 3.5 && c.y < 9 && !(ctx.hoodoos ?? []).some(([hx, hz]) => Math.hypot(c.x - hx, c.z - hz) < 14));
+  const shuffled = (arr) => arr.map((c) => ({ c, k: rnd() })).sort((a, b) => a.k - b.k).map((o) => o.c);
+  const flattest = (pool) => [...pool].sort((a, b) => a.slope - b.slope);
+  const pick = (pool, n, apart, taken, order = shuffled) => { const got = []; for (const c of order(pool)) { if (got.length >= n) break; if ([...taken, ...got].every((p) => Math.hypot(p.x - c.x, p.z - c.z) >= apart)) got.push(c); } return got; };
+  const nearPad = (c, lo, hi) => PADS.some(([px, pz]) => { const d = Math.hypot(c.x - px, c.z - pz); return d >= lo && d <= hi; });
+  // dry wells: a collar of eight blocks about a flat dark disc, on the flattest ground, far apart
+  const wells = pick(ok.filter((c) => c.slope < 9 && Math.max(Math.abs(c.x), Math.abs(c.z)) < 80 && !nearPad(c, 0, 30)), 3, 45, [], flattest);
+  const urns = [];
+  for (const w of wells) {
+    out.wells++; out.wellAt.push([r1(w.x), r1(w.z)]);
+    add("Slit", { pos: [r1(w.x), r2(w.y + 0.04), r1(w.z)], rot: [0, 0, 0], scale: [0.62, 0.03, 0.62] });
+    for (let i = 0; i < 8; i++) { const a = (i / 8) * 6.2832 + rnd() * 0.2; add("Boulder", { xz: [r1(w.x + Math.cos(a) * 1.55), r1(w.z + Math.sin(a) * 1.55)], rot: [0, r1(-a * DEG + 90), 0], scale: [0.56, r2(0.34 + rnd() * 0.12), 0.34] }); }
+    const a = rnd() * 6.28; urns.push({ id: 6, xz: [r1(w.x + Math.cos(a) * 3.3), r1(w.z + Math.sin(a) * 3.3)], rot: [0, r1(rnd() * 360), r1((rnd() - 0.5) * 14)], scale: [0.6, 0.6, 0.6] });
+  }
+  // bone piles: round each pad (16-42 out) and in the open desert; three to five long bones crossed in a pile
+  const bonePick = [...pick(ok.filter((c) => nearPad(c, 16, 42)), 10, 14, wells), ...pick(ok.filter((c) => !nearPad(c, 0, 50) && Math.max(Math.abs(c.x), Math.abs(c.z)) < 80), 6, 22, wells)];
+  for (const c of bonePick) {
+    out.boneAt.push([r1(c.x), r1(c.z)]);
+    const n = 3 + Math.floor(rnd() * 3), yaw0 = rnd() * 180;
+    for (let i = 0; i < n; i++) {
+      const a = rnd() * 6.28, d = rnd() * 0.9;
+      // the mesh stands on its foot along y: rolled 90 about z it lies along x, its axis 0.28 over the ground (half sunk)
+      add("Bone", { pos: [r1(c.x + Math.cos(a) * d), r2(c.y + 0.28), r1(c.z + Math.sin(a) * d)], rot: [r1((rnd() - 0.5) * 10), r1(yaw0 + i * 47 + rnd() * 40), 90], scale: [1, r2(0.55 + rnd() * 0.45), 1] });
+      out.bones++;
+    }
+  }
+  out.placed = await put(ctx, byMesh);
+  const ur = await ctx.call("copy_base_details", { base: "Multi.DesertOasis", units: "map", tag: TAG, copies: urns }, { soft: true });
+  out.urns = urns.length;
+  out.basePlaced = { urns: ur.err ? ur.text.slice(0, 160) : (ur.json?.placed?.length ?? urns.length) };
+  return out;
 }
 
 // ---- the lints: scenery over ground steeper than 50 degrees comes out (lint_contact), and so does a clump with nothing

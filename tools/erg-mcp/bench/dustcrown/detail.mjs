@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { startServer, ROOT } from "../caldera/mcpclient.mjs";
 import { BANK } from "./meshes/bank.mjs";
 import { renderViews } from "./detail-views.mjs";
-import { TAG, PALACE_TAG, mesaPass, hoodooPass, litterPass, floraPass, palacePass, lintPass } from "./detail-passes.mjs";
+import { TAG, PALACE_TAG, palettePass, mesaPass, hoodooPass, litterPass, floraPass, dryPass, palacePass, lintPass } from "./detail-passes.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -30,10 +30,12 @@ const TAGS = [TAG, PALACE_TAG];
 const say = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 export const PASSES = [
+  { name: "palette", run: palettePass },
   { name: "mesas", run: mesaPass },
   { name: "hoodoos", run: hoodooPass },
   { name: "litter", run: litterPass },
   { name: "flora", run: floraPass },
+  { name: "dry", run: dryPass },
   { name: "palace", run: palacePass },
   { name: "lint", run: lintPass },
 ];

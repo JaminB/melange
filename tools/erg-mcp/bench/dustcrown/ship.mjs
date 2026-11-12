@@ -19,6 +19,9 @@ const argv = process.argv.slice(2);
 const opt = (f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : d; };
 const OUT = path.resolve(opt("--out", path.join(HERE, "pack")));
 const ID = opt("--project", process.env.DUSTCROWN_ID || "dustcrown"), MOD = "dustcrown", VERSION = opt("--version", "1.0.0");
+// the palette pass's carriers (detail-passes.mjs PALACE_TINTS: stone A13, sandy plaster A16, Gold A26, GoldEdging A27, BlueMosaic A39, StarMosaic A31,
+// darkyellowplaster A58, and the dunes' four A10, A04, A08, A03, which a re-tint re-seats lower: the carrier's y is not the sim), named by their textures' digests
+const LAYER_TINT = /_ltint(15403853c992d13f|54f121563df677f4|8de26622f4a709d7|20a0e64a45901dab|4347f46919b17fe6|646c35be32f39798|ab43e0b579b2fbd8|2479eddfbf9ec34e|35271f0d5eaa25c3|f6d002160c7246b7|cf7a74ae6a495453)[0-9a-f]{6}$/;
 const GAME = process.env.MELANGE_GAME_DIR || "C:/Users/Jamin/Desktop/WUMFix/testenv/C";
 process.env.MELANGE_EXE ??= path.join(ROOT, "build/x86-release/Melange.exe");
 const say = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -45,8 +48,9 @@ try {
   say("bank", rb.text.slice(0, 200).replace(/\s+/g, " "));
   const levelPatch = path.join(modDir, "src", "dustcrown.ergpatch.json");
   if (argv.includes("--check")) {
-    const strip = (j) => JSON.stringify(JSON.parse(j), (k, v) => (k === "ops" && Array.isArray(v) ? v.filter((o) => !(o.op === "add" && /_(dtl1|pal1)$/.test(o.detail?.name ?? ""))) : v));
+    const strip = (j) => JSON.stringify(JSON.parse(j), (k, v) => (k === "ops" && Array.isArray(v) ? v.filter((o) => !(o.op === "add" && (/_(dtl1|pal1)(_tint[0-9a-f]{6})?$/.test(o.detail?.name ?? "") || LAYER_TINT.test(o.detail?.name ?? "")))) : v));
     const mine = strip(fs.readFileSync(levelPatch, "utf8")), was = strip(fs.readFileSync(path.join(OUT, "src", "dustcrown.ergpatch.json"), "utf8"));
+    if (process.env.DUSTCROWN_CHECK_DUMP) { fs.writeFileSync(path.join(process.env.DUSTCROWN_CHECK_DUMP, "check-mine.json"), mine); fs.writeFileSync(path.join(process.env.DUSTCROWN_CHECK_DUMP, "check-was.json"), was); }
     say("check", mine === was ? "the patch without the layer's details is the committed one" : `DIFFERENT (${mine.length} against ${was.length} bytes)`);
     fs.rmSync(modDir, { recursive: true, force: true }); fs.rmSync(stage, { recursive: true, force: true });
     if (mine !== was) process.exitCode = 1;

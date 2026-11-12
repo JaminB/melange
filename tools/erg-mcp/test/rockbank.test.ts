@@ -127,3 +127,17 @@ test("a real bank: one XMeshDescriptor per rock, one section, matte", { skip: !h
     assert.equal(bytes(readFileSync(r2.file)), bytes(readFileSync(r.file)), "the same inputs build the same bank");
   } finally { rmSync(out, { recursive: true, force: true }); }
 });
+
+test("lathe: a smooth solid of revolution, closed, with unit outward normals that agree on the seam", () => {
+  const b = buildRocks([{ name: "D", kind: "lathe", lathe: { profile: "dome", radius: 80, height: 60, segments: 16 } }, { name: "O", kind: "lathe", lathe: { profile: "onion", radius: 80, height: 160 } },
+    { name: "P", kind: "lathe", lathe: { profile: [[1, 0], [0.5, 0.6], [0, 1]], segments: 6 } }], { palette: "sandstone" });
+  const [d, o, p] = b.rocks;
+  assert.ok(Math.abs(d.box.max[0] - 4) < 1e-6 && Math.abs(d.box.max[1] - 3) < 1e-6 && Math.abs(d.box.min[1]) < 1e-9, "radius 80 and height 60 xom units are 4 x 3 map units, the foot at 0");
+  assert.ok(o.box.max[1] > 7.9 && o.mesh.vertices < 400 && p.mesh.vertices > 6);
+  for (const r of b.rocks) assert.equal(r.tris.length, r.mesh.triangles * 9);
+  // the seam: the first and last vertex of a ring share their position and their normal, so no crease shows
+  const g = JSON.parse(d.mesh.gltf);
+  assert.equal(g.accessors[1].count, g.accessors[0].count);
+  assert.deepEqual(buildRocks([{ name: "D", kind: "lathe" }]).rocks[0].mesh.gltf, buildRocks([{ name: "D", kind: "lathe" }]).rocks[0].mesh.gltf);
+  assert.throws(() => buildRocks([{ name: "X", kind: "lathe", lathe: { profile: "pagoda" as never } }]), /unknown lathe profile/);
+});

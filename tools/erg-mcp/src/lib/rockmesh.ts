@@ -5,12 +5,14 @@
 //                             falls away to one side, a squat pointed shard. Flat shaded (every face its own vertices).
 //   strata                    stacked irregular slabs, each stepped back from the one below: lies along a steep face.
 //   scree                     a heap of small hulls in one mesh: fills a slope's foot or a boulder field with one copy.
+//   lathe                     a SMOOTH solid of revolution (a dome, an onion dome, a spire, a drum): one ring of vertices per
+//                             profile point, analytic normals, so no facet or seam shows (the hulls are flat shaded on purpose).
 // The albedo is BAKED into the texture (the released Sunstone has no tint shader, docs/erg-mcp.md detail round 11): top
 // faces dusty, sides darkening toward the foot.
 import { deflateSync } from "node:zlib";
 
-export type RockKind = "boulder" | "slab" | "wedge" | "shard" | "strata" | "scree";
-export const ROCK_KINDS: readonly RockKind[] = ["boulder", "slab", "wedge", "shard", "strata", "scree"];
+export type RockKind = "boulder" | "slab" | "wedge" | "shard" | "strata" | "scree" | "lathe";
+export const ROCK_KINDS: readonly RockKind[] = ["boulder", "slab", "wedge", "shard", "strata", "scree", "lathe"];
 type V3 = [number, number, number];
 type V2 = [number, number];
 
@@ -40,6 +42,8 @@ function noise3(seed: number) {
 
 export class Mesh {
   p: V3[] = []; uv: V2[] = []; idx: number[] = [];
+  /** Explicit per-vertex normals (a lathe's analytic ones); without them `normals()` smooths over shared vertices. */
+  nrm?: V3[];
   v(p: V3, uv: V2) { this.p.push(p); this.uv.push(uv); return this.p.length - 1; }
   tri(a: number, b: number, c: number) { this.idx.push(a, b, c); }
   /** Smooth normals (area weighted) over shared vertices. */
@@ -186,6 +190,51 @@ export function scree(seed: number, o: ScreeOpts = {}): Mesh {
   return m;
 }
 
+export type LatheProfile = "dome" | "onion" | "spire" | "drum";
+export interface LatheOpts { profile?: LatheProfile | [number, number][]; radius?: number; height?: number; segments?: number; }
+/** Profiles are [r, y] pairs from the foot up, r as a share of the radius and y of the height, ending on the axis (r 0) for a
+ * closed top. */
+const LATHE_PROFILES: Record<LatheProfile, [number, number][]> = {
+  dome: Array.from({ length: 9 }, (_, i) => { const t = (i / 8) * Math.PI / 2; return [Math.cos(t), Math.sin(t)] as [number, number]; }),
+  onion: [[0.9, 0], [1, 0.1], [1, 0.24], [0.94, 0.38], [0.76, 0.54], [0.5, 0.7], [0.26, 0.84], [0.1, 0.94], [0, 1]],
+  spire: [[1, 0], [0.8, 0.22], [0.58, 0.46], [0.38, 0.68], [0.2, 0.86], [0.08, 0.96], [0, 1]],
+  drum: [[1, 0], [1, 0.78], [0.86, 0.82], [0.86, 1], [0, 1]],
+};
+/** A smooth solid of revolution about y (xom units; the foot at y = 0, so a copy placed by `pos` stands on it): `segments`
+ * (6-48, default 24) around, the profile's points up. The normals are analytic (the profile's own tangent), the same on the
+ * ring's seam, so it shades as one smooth surface; the uv wraps once round and runs down the texture's side rows. */
+export function lathe(o: LatheOpts = {}): Mesh {
+  const m = new Mesh(), R = o.radius ?? 60, H = o.height ?? 60, N = Math.max(6, Math.min(48, Math.round(o.segments ?? 24)));
+  const pr = typeof o.profile === "object" ? o.profile : LATHE_PROFILES[o.profile ?? "dome"];
+  if (!pr) throw new Error(`unknown lathe profile "${o.profile}" (${Object.keys(LATHE_PROFILES).join(", ")})`);
+  const nrm: V3[] = m.nrm = [];
+  const rows: number[][] = [];
+  pr.forEach(([r, y], i) => {
+    // the profile's outward normal in the (r, y) plane: the tangent turned a quarter, from the neighbours
+    const a = pr[Math.max(0, i - 1)], b = pr[Math.min(pr.length - 1, i + 1)];
+    let nr = (b[1] - a[1]) * H, ny = -(b[0] - a[0]) * R;
+    const l = Math.hypot(nr, ny) || 1; nr /= l; ny /= l;
+    const row: number[] = [];
+    for (let k = 0; k <= N; k++) {
+      const t = (k / N) * Math.PI * 2, c = Math.cos(t), s = Math.sin(t);
+      row.push(m.v([c * r * R, y * H, s * r * R], [k / N, 0.5 + 0.47 * (1 - y)]));
+      nrm.push([c * nr, ny, s * nr]);
+    }
+    rows.push(row);
+  });
+  for (let i = 0; i + 1 < rows.length; i++) for (let k = 0; k < N; k++) {
+    const a = rows[i][k], b = rows[i][k + 1], c = rows[i + 1][k], d = rows[i + 1][k + 1];
+    if (pr[i][0] > 1e-6) m.tri(a, c, b);                      // counter-clockwise from outside
+    if (pr[i + 1][0] > 1e-6) m.tri(b, c, d);
+  }
+  // the underside: a fan to the axis, facing down, so a dome seen from below is not open
+  if (pr[0][0] > 1e-6) {
+    const c0 = m.v([0, 0, 0], [0.5, 0.97]); nrm.push([0, -1, 0]);
+    for (let k = 0; k < N; k++) m.tri(c0, rows[0][k + 1], rows[0][k]);
+  }
+  return m;
+}
+
 // ---------------------------------------------------------------- textures (128 x 128 RGB)
 /** The hull rocks' baked albedo: rows 0-63 the top faces (dust over the stone), rows 64-127 the sides, dustier at row 64
  * (a face's top) down to the bare stone at row 127 (its foot); vesicle pits and a fine grain. */
@@ -242,7 +291,7 @@ function png(w: number, h: number, rgb: Uint8Array): Uint8Array {
 export interface Gltf { gltf: string; bin: Uint8Array; vertices: number; triangles: number; min: V3; max: V3; }
 /** The glTF text (referencing `<name>.bin`) and binary of a mesh. The u16 vertex limit is the bank's. */
 export function gltf(name: string, m: Mesh, generator = "erg-mcp rockmesh"): Gltf {
-  const N = m.normals(), nv = m.p.length;
+  const N = m.nrm ?? m.normals(), nv = m.p.length;
   if (nv > 65535) throw new Error(`${name}: ${nv} vertices (u16 indices)`);
   const arrays = [new Float32Array(m.p.flat()), new Float32Array(N.flat()), new Float32Array(m.uv.flat()), new Uint32Array(m.idx)];
   const bin = concat(arrays.map((a) => new Uint8Array(a.buffer)));
@@ -270,9 +319,11 @@ export interface RockSpec {
   scale?: number;
   strata?: StrataOpts;
   scree?: ScreeOpts;
+  /** kind lathe: the profile (a name or [r, y] pairs), `radius` and `height` (xom units; 20 = 1 map unit) and `segments`. */
+  lathe?: LatheOpts;
 }
 /** The default seeds of each kind: Caldera's four hulls and its ledge. */
-const KIND_SEED: Record<RockKind, number> = { boulder: 1101, slab: 1202, wedge: 1303, shard: 1404, strata: 2202, scree: 5505 };
+const KIND_SEED: Record<RockKind, number> = { boulder: 1101, slab: 1202, wedge: 1303, shard: 1404, strata: 2202, scree: 5505, lathe: 6606 };
 const HULL: Record<string, "blocky" | "slab" | "wedge" | "shard"> = { boulder: "blocky", slab: "slab", wedge: "wedge", shard: "shard" };
 export const DEFAULT_ROCKS: RockSpec[] = [{ name: "Boulder", kind: "boulder" }, { name: "Slab", kind: "slab" }, { name: "Wedge", kind: "wedge" }, { name: "Shard", kind: "shard" }];
 
@@ -304,6 +355,7 @@ export function buildRocks(rocks: RockSpec[], opts: { palette?: string | Palette
     let mesh: Mesh;
     if (r.kind === "strata") mesh = strata(seed, r.strata);
     else if (r.kind === "scree") mesh = scree(seed, r.scree);
+    else if (r.kind === "lathe") mesh = lathe(r.lathe);
     else mesh = hullRock(HULL[r.kind], seed);
     if (r.scale !== undefined && r.scale !== 1) mesh.p = mesh.p.map((p) => [p[0] * r.scale!, p[1] * r.scale!, p[2] * r.scale!] as V3);
     const key = `${r.kind === "strata" ? "strata" : "rock"}-${pal.base.join("_")}-${pal.dust.join("_")}-${pal.dustShare ?? 1}-${(pal.textureSeed ?? [47, 7707]).join("_")}`;
