@@ -46,36 +46,104 @@ export const PREHISTORIC_MATERIALS: [string, string, string, string, string][] =
   ["P60", "P60", "P60", "NULL", "MetalRivet"], ["P59", "P59", "P59", "NULL", "Metal"],
 ];
 
-export interface LandTint { digest: string; color: string; texture: string | null }
+/** The Arabian theme's landscape tiles (ThemeArabian\Ann.tga in Data\Bundles\Bundl13.xom; tools/tag_digest.py --xom).
+ * Some are one image under two names: A03 is A11 (grass02's top is the sand's), A14 = A15 = A60 = A61, and A62-A64 are
+ * Prehistoric's P62-P64, so a tint of one draws on the others too (tileTwins). */
+export const ARABIAN_TILES: Record<string, string> = {
+  A01: "55d188b195b8fb00", A02: "335290ea7d90a1ad", A03: "cf7a74ae6a495453", A04: "35271f0d5eaa25c3", A05: "198ef08b85f29dbd", A06: "45b286f2546ae116",
+  A07: "c5f49c6b37b89b64", A08: "f6d002160c7246b7", A09: "c7db86dac1be436a", A10: "2479eddfbf9ec34e", A11: "cf7a74ae6a495453", A12: "9f8e2cc964d2c148",
+  A13: "15403853c992d13f", A14: "b7270dad0d8fefd9", A15: "b7270dad0d8fefd9", A16: "54f121563df677f4", A17: "a185febeb62fc487", A18: "a86dbaf1eb56fe6f",
+  A19: "73dcbd4bbab6aa58", A20: "9a6013f6f3884ee5", A21: "6ae149ba1cd0b2fb", A22: "f7ce3ae95289552e", A23: "39799a074fee4c8c", A24: "86c46bf422218138",
+  A25: "ad34227110aaa74d", A26: "8de26622f4a709d7", A27: "20a0e64a45901dab", A28: "b6415c45aa76b4d5", A29: "522c0bcb20510d3b", A30: "c4f4174f9c64646c",
+  A31: "646c35be32f39798", A32: "08c014f3444b75d1", A33: "4646389dc31bd1f4", A34: "6a493df98f7928ce", A35: "090c3bdd367d3b28", A36: "d072d6b2abae83eb",
+  A37: "09aeddcd652f9a2e", A38: "fa0a605be035b8ea", A39: "4347f46919b17fe6", A40: "cd77d4b784a8878b", A41: "6dc95550bfb9af6d", A42: "8c04ba908acb4401",
+  A43: "4d0d93c4c2da47aa", A44: "59fc63db85b1d53d", A45: "f209ab4a0d50886c", A46: "8ca599532078db06", A47: "2cc8ad336059b001", A48: "63661ba7ea669b39",
+  A49: "190c77b4edc965e1", A50: "dd103b0aa65a98bf", A51: "3e30567f01ec586c", A52: "f41620d8851ef6d1", A53: "404c955228493459", A54: "50a39ee6810b8974",
+  A55: "6213e62d56c61e77", A56: "66f781a3218fb812", A57: "f7b6f204047188fc", A58: "ab43e0b579b2fbd8", A59: "81a187b165e596c2", A60: "b7270dad0d8fefd9",
+  A61: "b7270dad0d8fefd9", A62: "54ac91fa3acdd1e0", A63: "c88b6e58dec650a5", A64: "47ddc562e6cab01e",
+};
 
-/** A texture given as a Prehistoric tile name ("P05") or a 16-hex digest -> its digest (lower case). */
-export function textureDigest(t: string): { digest: string; texture: string | null } {
-  const s = t.trim();
-  const tile = PREHISTORIC_TILES[s.toUpperCase()];
-  if (tile) return { digest: tile, texture: s.toUpperCase() };
-  if (/^[0-9a-fA-F]{16}$/.test(s)) {
-    const d = s.toLowerCase();
-    const name = Object.entries(PREHISTORIC_TILES).find(([, v]) => v === d)?.[0] ?? null;
-    return { digest: d, texture: name };
-  }
-  throw new Error(`texture: a Prehistoric tile name (P01-P64) or a 16-hex texture digest, not ${JSON.stringify(t)}`);
+/** ThemeArabian.txt's records by material index, as PREHISTORIC_MATERIALS (sand01 and Sand draw A11, grass02's top too). */
+export const ARABIAN_MATERIALS: [string, string, string, string, string][] = [
+  ["A01", "A05", "A05", "NULL", "grass01"], ["A02", "A06", "A06", "NULL", "grass01blend"], ["A03", "A07", "A07", "NULL", "grass02"], ["A04", "A08", "A08", "NULL", "grass02blend"],
+  ["A05", "A05", "A05", "NULL", "rock01"], ["A06", "A06", "A06", "NULL", "rock01blend"], ["A07", "A07", "A07", "NULL", "rock02"], ["A08", "A08", "A08", "NULL", "rock02blend"],
+  ["A09", "A09", "A09", "NULL", "path01"], ["A10", "A10", "A10", "NULL", "path02"], ["A11", "A11", "A11", "NULL", "sand01"], ["A12", "A12", "A12", "NULL", "sand01blend"],
+  ["A13", "A13", "A13", "NULL", "stone"], ["A14", "A14", "A14", "NULL", "Leaves"], ["A15", "A15", "A15", "NULL", "Bricks"], ["A16", "A16", "A16", "NULL", "sandy-plaster"],
+  ["A17", "A17", "A17", "NULL", "sandy-plasterBLEND"], ["A18", "A18", "A18", "NULL", "cracked-pot"], ["A19", "A19", "A19", "NULL", "DomeTile"], ["A20", "A20", "A20", "NULL", "BlueStripeAwning"],
+  ["A21", "A21", "A21", "NULL", "Metal"], ["A22", "A22", "A22", "NULL", "Plaster"], ["A23", "A23", "A23", "NULL", "PlasterBlend"], ["A12", "A12", "A12", "NULL", "SandBlend"],
+  ["A11", "A11", "A11", "NULL", "Sand"], ["A26", "A26", "A26", "NULL", "Gold"], ["A27", "A27", "A27", "NULL", "GoldEdging"], ["A28", "A28", "A28", "NULL", "YellowRedStripeAwning"],
+  ["A29", "A29", "A29", "NULL", "Reddiamond-carpet"], ["A30", "A30", "A30", "NULL", "Trellice"], ["A31", "A31", "A31", "NULL", "StarMosaic"], ["A32", "A32", "A32", "NULL", "RedCarpet"],
+  ["A33", "A33", "A33", "NULL", "PlainTiles"], ["A34", "A34", "A34", "NULL", "Door1"], ["A35", "A35", "A35", "NULL", "Window1"], ["A36", "A36", "A36", "NULL", "PlasterPattern"],
+  ["A37", "A37", "A37", "NULL", "PlainTileBlend"], ["A38", "A38", "A38", "NULL", "Columnbase"], ["A39", "A39", "A39", "NULL", "BlueMosaic1"], ["A40", "A40", "A40", "NULL", "BlueMosaic2"],
+  ["A41", "A41", "A41", "NULL", "camel-fur"], ["A42", "A42", "A42", "NULL", "blue-crisscross"], ["A43", "A43", "A43", "NULL", "bigleaf"], ["A56", "A44", "A56", "NULL", "bamboo"],
+  ["A45", "A45", "A45", "NULL", "purple-trim"], ["A46", "A46", "A46", "NULL", "superfancytrim"], ["A47", "A47", "A47", "NULL", "purple-plaster"], ["A48", "A48", "A48", "NULL", "sandy-window"],
+  ["A24", "A24", "A24", "NULL", "LightWood-planks"], ["A25", "A25", "A25", "NULL", "bark"], ["A49", "A49", "A49", "NULL", "carpet3"], ["A50", "A50", "A50", "NULL", "Cloud"],
+  ["A51", "A51", "A53", "NULL", "canon"], ["A52", "A52", "A52", "NULL", "ROPE"], ["A54", "A54", "A54", "NULL", "woodgoldpanel"], ["A55", "A55", "A55", "NULL", "plasterpattern"],
+  ["A57", "A57", "A57", "NULL", "whitecanvas"], ["A58", "A58", "A58", "NULL", "darkyellowplaster"], ["A56", "A56", "A56", "NULL", "darkgreyplaster"], ["A59", "A59", "A59", "NULL", "PrisonSign"],
+  ["A60", "A60", "A60", "NULL", "girder"], ["A63", "A62", "A63", "NULL", "girder"], ["A60", "A60", "A60", "NULL", "girder"],
+];
+
+/** The themes whose tiles and material records are known, by the tile names' letter. */
+export const TINT_THEMES = {
+  PREHISTORIC: { letter: "P", label: "Prehistoric", tiles: PREHISTORIC_TILES, materials: PREHISTORIC_MATERIALS },
+  ARABIAN: { letter: "A", label: "Arabian", tiles: ARABIAN_TILES, materials: ARABIAN_MATERIALS },
+} as const;
+export type TintTheme = keyof typeof TINT_THEMES;
+
+/** A level's databank theme ("ARABIAN", "Prehistoric") -> a theme with known tiles, or null. */
+export function tintTheme(theme: string | null | undefined): TintTheme | null {
+  const t = String(theme ?? "").trim().toUpperCase();
+  return t in TINT_THEMES ? (t as TintTheme) : null;
 }
 
-/** The tiles a material record draws: "top" its first, "side" its steep faces, "all" both (deduplicated). */
-export function materialTiles(material: number | string, faces: "top" | "side" | "all" = "side"): { index: number; name: string; tiles: string[] } {
-  const index = typeof material === "number" ? material : PREHISTORIC_MATERIALS.findIndex((r) => r[4].toLowerCase() === String(material).toLowerCase());
-  const r = PREHISTORIC_MATERIALS[index];
-  if (!r) throw new Error(`material: a Prehistoric material index (0-${PREHISTORIC_MATERIALS.length - 1}) or name, not ${JSON.stringify(material)}`);
+/** A digest's tile name: the theme's own first, then the other known themes'. */
+function tileOf(digest: string, theme: TintTheme): string | null {
+  for (const th of [theme, ...(Object.keys(TINT_THEMES) as TintTheme[]).filter((x) => x !== theme)]) {
+    const name = Object.entries(TINT_THEMES[th].tiles).find(([, v]) => v === digest)?.[0];
+    if (name) return name;
+  }
+  return null;
+}
+
+/** Every tile of a theme that is this digest's image (a tint of one draws on all of them). */
+export function tileTwins(digest: string, theme: TintTheme = "PREHISTORIC"): string[] {
+  return Object.entries(TINT_THEMES[theme].tiles).filter(([, v]) => v === digest).map(([k]) => k);
+}
+
+export interface LandTint { digest: string; color: string; texture: string | null }
+
+/** A texture given as a tile name (Prehistoric "P05", Arabian "A11") or a 16-hex digest -> its digest (lower case).
+ * A digest's name is looked up in `theme` first (default Prehistoric). */
+export function textureDigest(t: string, theme: TintTheme = "PREHISTORIC"): { digest: string; texture: string | null } {
+  const s = t.trim(), up = s.toUpperCase();
+  for (const th of Object.values(TINT_THEMES)) {
+    const tiles: Record<string, string> = th.tiles;
+    if (up.startsWith(th.letter) && tiles[up]) return { digest: tiles[up], texture: up };
+  }
+  if (/^[0-9a-fA-F]{16}$/.test(s)) {
+    const d = s.toLowerCase();
+    return { digest: d, texture: tileOf(d, theme) };
+  }
+  throw new Error(`texture: a Prehistoric tile name (P01-P64), an Arabian one (A01-A64) or a 16-hex texture digest, not ${JSON.stringify(t)}`);
+}
+
+/** The tiles a material record of `theme` (default Prehistoric) draws: "top" its first, "side" its steep faces, "all"
+ * both (deduplicated). */
+export function materialTiles(material: number | string, faces: "top" | "side" | "all" = "side", theme: TintTheme = "PREHISTORIC"): { index: number; name: string; tiles: string[] } {
+  const recs = TINT_THEMES[theme].materials;
+  const index = typeof material === "number" ? material : recs.findIndex((r) => r[4].toLowerCase() === String(material).toLowerCase());
+  const r = recs[index];
+  if (!r) throw new Error(`material: a ${TINT_THEMES[theme].label} material index (0-${recs.length - 1}) or name, not ${JSON.stringify(material)}`);
   const pick = faces === "top" ? [r[0]] : faces === "side" ? [r[1], r[2]] : [r[0], r[1], r[2]];
   return { index, name: r[4], tiles: [...new Set(pick.filter((t) => t !== "NULL"))] };
 }
 
-/** The landscape tints a name carries (every tag). */
-export function landTintsOf(name: string): LandTint[] {
+/** The landscape tints a name carries (every tag); `theme` names the textures first (default Prehistoric). */
+export function landTintsOf(name: string, theme: TintTheme = "PREHISTORIC"): LandTint[] {
   const out: LandTint[] = [];
   for (const m of name.matchAll(LTINT_RE)) {
     const digest = m[1].toLowerCase();
-    out.push({ digest, color: `#${m[2].toLowerCase()}`, texture: Object.entries(PREHISTORIC_TILES).find(([, v]) => v === digest)?.[0] ?? null });
+    out.push({ digest, color: `#${m[2].toLowerCase()}`, texture: tileOf(digest, theme) });
   }
   return out;
 }

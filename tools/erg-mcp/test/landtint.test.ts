@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { syntheticBlobs } from "../../../web/test/e2e/erg-mock.mjs";
 import { EditorStore, type Loaded, type Scene } from "../src/core";
 import { classifyDetail, simFingerprint } from "../src/lib/sim-fingerprint";
-import { carrierName, landTintsOf, materialTiles, textureDigest } from "../src/lib/landtint";
+import { ARABIAN_MATERIALS, ARABIAN_TILES, carrierName, landTintsOf, materialTiles, textureDigest, tileTwins, tintTheme } from "../src/lib/landtint";
 import { tintOf } from "../src/lib/tint";
 import { validate } from "../src/registry";
 import { tools } from "../src/tools/landtint";
@@ -66,4 +66,44 @@ test("tint_landscape: one carrier per texture, replaced and removed; the sim fin
   assert.equal(carriers().length, 0);
   assert.equal(simFingerprint(store, "").visual, before.visual, "removing the tints restores the visual hash");
   await assert.rejects(call({ tints: [{ texture: "P05", material: 6, color: "#000000" }] }), /texture or material/);
+});
+
+test("land tint tags: the Arabian theme's tiles and materials (Dustcrown's sand)", () => {
+  assert.equal(Object.keys(ARABIAN_TILES).length, 64);
+  assert.equal(ARABIAN_MATERIALS.length, 63);
+  assert.deepEqual(textureDigest("a10"), { digest: "2479eddfbf9ec34e", texture: "A10" });
+  assert.deepEqual(textureDigest("P05"), { digest: "bfb9ab5911ad8e29", texture: "P05" }, "a P name stays Prehistoric");
+  assert.deepEqual(textureDigest("2479EDDFBF9EC34E"), { digest: "2479eddfbf9ec34e", texture: "A10" }, "a digest of another theme is still named");
+  assert.equal(textureDigest("47ddc562e6cab01e").texture, "P64", "a shared image: the asked theme's name first (default Prehistoric)");
+  assert.equal(textureDigest("47ddc562e6cab01e", "ARABIAN").texture, "A64");
+  assert.throws(() => textureDigest("A65"), /A01-A64/);
+  assert.deepEqual(materialTiles("path02", "side", "ARABIAN").tiles, ["A10"]);
+  assert.deepEqual(materialTiles("Sand", "all", "ARABIAN"), { index: 24, name: "Sand", tiles: ["A11"] });
+  assert.deepEqual(materialTiles(3, "all", "ARABIAN").tiles, ["A04", "A08"]);
+  assert.deepEqual(materialTiles("path02").tiles, ["P05"], "the default theme is unchanged");
+  assert.throws(() => materialTiles(70, "side", "ARABIAN"), /Arabian material index \(0-62\)/);
+  assert.deepEqual(tileTwins(ARABIAN_TILES.A11, "ARABIAN"), ["A03", "A11"]);
+  assert.equal(tintTheme("arabian"), "ARABIAN");
+  assert.equal(tintTheme("CAMELOT"), null);
+  assert.deepEqual(landTintsOf(carrierName("VISIBLE_X", ARABIAN_TILES.A10, "#c08040"), "ARABIAN"), [{ digest: "2479eddfbf9ec34e", color: "#c08040", texture: "A10" }]);
+});
+
+test("tint_landscape: an Arabian level's materials by its own theme, with the tiles that share an image", async () => {
+  const store = new EditorStore("t", loaded(), loaded());
+  store.scene.databank.theme = "ARABIAN";
+  const project = { store, id: "t", info: {}, erg: { script: async () => "" } };
+  const base = loaded().scene;
+  base.details.push({ id: 90001, frame: base.frames[0].id, name: "VISIBLE_Rock", resource: "Rock", pos: [0, 0, 0], rot: [0, 0, 0], scale: [1, 1, 1], src: null } as never);
+  const s = { requireProject: () => project, get store() { return store; }, project, client: async () => ({}), levels: async () => ({ loadBase: async () => ({ scene: base }) }) } as unknown as Session;
+  const t = tools.find((x) => x.name === "tint_landscape")!;
+  const call = async (args: Record<string, unknown>): Promise<any> => { const bad = validate(t.inputSchema, args); if (bad) throw new Error(bad); return await t.handler(s, args); };
+  const r = await call({ tints: [{ material: "path02", faces: "top", color: "#c08040" }, { material: "Sand", faces: "all", color: "#e8c890" }], id: 90001 });
+  assert.deepEqual(r.tints.map((x: any) => x.texture), ["A10", "A11"]);
+  assert.deepEqual(r.tints[1].sameImage, ["A03", "A11"]);
+  assert.equal(r.tints[0].sameImage, undefined);
+  const l = await call({ list: true });
+  assert.equal(l.theme, "ARABIAN");
+  assert.ok(l.materials.some((m: any) => m.name === "grass02blend" && m.tiles.includes("A04")));
+  const p = await call({ tints: [{ material: "path02", color: "#101010" }], theme: "PREHISTORIC", id: 90001 });
+  assert.equal(p.tints[0].texture, "P05", "theme overrides the level's");
 });
