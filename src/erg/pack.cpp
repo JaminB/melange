@@ -168,7 +168,8 @@ bool WritePack(const PackSpec& spec, const std::wstring& dir, std::vector<std::s
     manifest.Int("spiceVersion", 1).Str("id", spec.modId).Str("version", spec.version);
     manifest.Str("name", existing.present && !existing.name.empty() ? existing.name : spec.name);
     jsonmini::Obj melange;
-    melange.Str("range", spec.melangeRange.empty() ? std::string(">=0.2.0") : spec.melangeRange);
+    const bool needs015 = spec.spawnAreas || !spec.timeOfDay.empty() || !spec.image.empty();
+    melange.Str("range", !spec.melangeRange.empty() ? spec.melangeRange : std::string(needs015 ? kAreasRange : ">=0.2.0"));
     manifest.Raw("melange", melange.End());
     manifest.Str("kind", "content").Bool("defaultEnabled", false);
     manifest.Raw("levels", levels.End());

@@ -975,6 +975,7 @@ struct Service::Impl {
         spec.survivor = surv && surv->boolean;
         if (tod) spec.timeOfDay = tod->str;
         if (image) spec.image = image->str;
+        spec.spawnAreas = patch.spawns == SpawnMode::Areas;
         if (mrange) spec.melangeRange = mrange->str;
         spec.patchJson = WritePatch(patch);
         spec.script = std::move(script);
