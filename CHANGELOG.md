@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.15.0
 
-Melange 0.15.0, not yet released. Erg: spawn areas dealt per match, map packs that pin their time of day and name
+Erg: spawn areas dealt per match, map packs that pin their time of day and name
 their own picture, sea materials and a level haze; and the map builder (erg-mcp) grown by a second map, Dustcrown
 (Foldspace's map 2, built in `tools/erg-mcp/bench/dustcrown`).
 
