@@ -12,8 +12,9 @@
 // camera (the FlyCam post-explosion hold), the AI and level scripts see only Land.NewShape. The message's
 // constructor 0x518ce0 is not called (it writes the global Explosion.* data values and applies DoubleDamage).
 //
-// "removed" is the drop of the per-frame u16 voxel counts at 0x955570 (index = frame +0x14), plus 1 when only the
-// heightmap changed (Land.Changed set with no voxel gone). Explosion.HitIndestructible, which a carve touching a PERM
+// "removed" is the drop of the per-frame u16 voxel counts at 0x955570 (index = frame +0x14), plus the heightmap cells
+// under the sphere that went down by 1 world unit or more (Ground below; Land.Changed is set for any sphere inside
+// the heightmap's box, so it is no measure). Explosion.HitIndestructible, which a carve touching a PERM
 // frame sets, is put back so the spade never leaks it into a level script's next explosion check.
 #include <windows.h>
 
@@ -56,6 +57,60 @@ bool CallOnExplosion(uintptr_t land, uint8_t* msg) {
     }
 }
 
+// The heightmap (HeightmapLogicEntity *(0x952ad4)): heights at +0x2c (float*, +0x30 the count), the box's extent at
+// +0x64/+0x68/+0x6c, its min at 0x90c440, the grid at 0x90c42c (W) / 0x90c430 (H); +0x78 bit 2 is a second carve
+// mode (0x461bb0) this does not model. Its carve 0x463c90 sets Land.Changed for any sphere inside the box and moves a
+// cell half way to the sphere's floor, so `removed` counts the cells that actually went down (sim_land.h).
+constexpr uintptr_t kHeightmap = 0x952ad4, kGridW = 0x90c42c, kGridH = 0x90c430, kGridMin = 0x90c440;
+bool g_groundOk = false;  // Check() passed for the heightmap reads
+
+struct Ground {
+    bool absent = false;  // no heightmap on this level
+    uintptr_t cells = 0;
+    sl::GroundWindow win;
+    float extentY = 0.f;
+    float before[sl::kGroundWindowMax + 8][sl::kGroundWindowMax + 8];
+
+    bool Snapshot(const float pos[3], float radius) {
+        const uintptr_t hm = Rd<uintptr_t>(kHeightmap);
+        if (!hm) {
+            absent = true;
+            return true;  // nothing to lower: the voxels are the whole answer
+        }
+        if (!g_groundOk || (Rd<uint8_t>(hm + 0x78) & 2)) return false;
+        sl::HeightGrid g;
+        g.w = Rd<int>(kGridW);
+        g.h = Rd<int>(kGridH);
+        cells = Rd<uintptr_t>(hm + 0x2c);
+        const int count = Rd<int>(hm + 0x30);
+        if (!cells || g.w <= 0 || g.h <= 0 || g.w > 4096 || g.h > 4096 || count < g.w * g.h) return false;
+        if (!melange::gamestate::detail::Copy(kGridMin, g.min, sizeof g.min) ||
+            !melange::gamestate::detail::Copy(hm + 0x64, g.extent, sizeof g.extent))
+            return false;
+        extentY = g.extent[1];
+        // Off the grid or too wide to measure: the flag fallback (off the grid the engine leaves the flag unset).
+        if (!sl::GroundFootprint(g, pos, radius, &win)) return false;
+        for (int z = win.z0; z <= win.z1; ++z)
+            if (!Row(g.w, z, before[z - win.z0])) return false;
+        gridW = g.w;
+        return true;
+    }
+    int Lowered() {
+        int n = 0;
+        float after[sl::kGroundWindowMax + 8];
+        for (int z = win.z0; z <= win.z1; ++z)
+            if (Row(gridW, z, after)) n += sl::CountLowered(before[z - win.z0], after, win.Width(), extentY);
+        return n;
+    }
+
+private:
+    int gridW = 0;
+    bool Row(int w, int z, float* out) const {
+        return melange::gamestate::detail::Copy(cells + 4u * (static_cast<uintptr_t>(z) * w + win.x0), out,
+                                                 sizeof(float) * win.Width());
+    }
+};
+
 class EngineLand final : public sl::Backend {
 public:
     bool Carve(const float pos[3], float radius, sl::CarveOut* out) override {
@@ -82,6 +137,8 @@ public:
             out->why = "unavailable";
             return false;
         }
+        Ground ground;
+        const bool measured = ground.Snapshot(pos, radius);
         uintptr_t hitAt = 0;
         uint8_t hitWas[4] = {};
         const bool hitSaved = gd::Snapshot("Explosion.HitIndestructible", &hitAt, hitWas);
@@ -104,7 +161,10 @@ public:
         if (melange::gamestate::detail::Copy(kVoxelCounts, after, sizeof after))
             for (int i = 0; i < kCountSlots; ++i)
                 if (after[i] < before[i]) removed += before[i] - after[i];
-        if (!removed && gd::Flag("Land.Changed")) removed = 1;  // the heightmap only
+        if (measured)
+            removed += ground.Lowered();
+        else if (!removed && gd::Flag("Land.Changed") && !ground.absent)
+            removed = 1;  // a heightmap this build could not measure: the flag is all there is
         out->removed = removed;
         return true;
     }
@@ -141,6 +201,19 @@ bool Check() {
            Expect(0x527980, {0xd9, 0x41, 0x38});
 }
 
+// The heightmap reads Ground relies on (optional: without them `removed` falls back to the Land.Changed flag).
+bool CheckGround() {
+    using melange::mem::Expect;
+    return Expect(0x463e0c, {0x3b, 0x5f, 0x30}) &&                    // cmp ebx, [edi+0x30]   (the count)
+           Expect(0x463e2b, {0x8b, 0x4f, 0x2c, 0xd9, 0x04, 0x99}) &&  // mov ecx, [edi+0x2c]; fld [ecx+ebx*4]
+           Expect(0x463f64, {0xd9, 0x14, 0xb0, 0xd9, 0x47, 0x68}) &&  // fst [eax+esi*4]; fld [edi+0x68] (extent.y)
+           Expect(0x460efa, {0xd8, 0x25, 0x40, 0xc4, 0x90, 0x00}) &&  // fsub [0x90c440]       (min.x)
+           Expect(0x460f1c, {0xd8, 0x71, 0x64}) &&                    // fdiv [ecx+0x64]       (extent.x)
+           Expect(0x461ace, {0xda, 0x0d, 0x2c, 0xc4, 0x90, 0x00}) &&  // fimul [0x90c42c]      (W)
+           Expect(0x461aff, {0xda, 0x0d, 0x30, 0xc4, 0x90, 0x00}) &&  // fimul [0x90c430]      (H)
+           Expect(0x463ce3, {0xf6, 0x47, 0x78, 0x02});                // test byte [edi+0x78], 2
+}
+
 class LandCarve final : public melange::Module {
 public:
     const char* Name() const override { return "LandCarve"; }
@@ -157,6 +230,8 @@ public:
             sl::SetBackend(nullptr);
         } else {
             g_ready = true;
+            g_groundOk = CheckGround();
+            if (!g_groundOk) LOG_WARN("[land] heightmap layout differs: its carves count 1 when anything changed");
             sl::SetBackend(&g_backend);
         }
         if (!sl::AddSimFunctions()) LOG_WARN("[land] could not add wum.sim.carve/carveLine");
@@ -167,7 +242,7 @@ public:
         return true;
     }
     void Uninstall() override {
-        g_ready = false;
+        g_ready = g_groundOk = false;
         sl::SetBackend(nullptr);
         if (g_context) melange::lua50::RemoveOnContext(g_context);
         if (g_contrib) melange::wormsign::RemoveContributor(g_contrib);

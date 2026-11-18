@@ -950,7 +950,10 @@ there was solid). Melange 0.16; check `if wum.sim.carve then`. It calls the land
   `nil, "indestructible"`. `Explosion.HitIndestructible`, which a carve against a PERM frame sets, is put back.
 
 `radius` is 1 to 200. Voxels on the game's maps are 24 to 40 world units a side, so a carve removes whole cubes: a
-radius of about one voxel takes 1 to 8 of them, and the heightmap can only be dug into a pit. Returns `nil, reason`:
+radius of about one voxel takes 1 to 8 of them. The heightmap surround (the beach or ground of many maps) is a height
+field: it can only be dug into a pit or a trench, never a cave, and each carve moves a cell only half way down to the
+sphere's floor. Its share of `removed` is the number of cells under the sphere that went down by at least 1 world unit,
+so repeating a carve at one spot reaches `0` once the pit is as deep as that sphere can make it. Returns `nil, reason`:
 `"not in a match"`, `"bad arguments"` (a radius out of range), `"budget"`, `"in hit"` (called from a `wum.sim.melee`
 `hit` handler: carve on the next tick instead), `"indestructible"`, `"unavailable"` (another game build, or
 `[LandCarve] Enabled=0`); a non-number argument raises.
@@ -966,7 +969,7 @@ its spheres). A refused carve answers `nil, "budget"`. `[LandCarve] Log=1` logs 
 
 Every carve runs inside the sim tick, at the same tick on every machine, with float32 arguments, on land that has the
 same history everywhere, so the result is the same on every machine; `removed` is the drop of the engine's own
-per-frame voxel counts, safe to branch on. Each carve's tick, argument bits and removed count are folded into a digest
+per-frame voxel counts plus the lowered heightmap cells, safe to branch on. Each carve's tick, argument bits and removed count are folded into a digest
 that the Wormsign contributor `melange.land` hashes every tick (with the budget and whether the engine side is
 live), so a land that diverged is named at the tick it did, and a peer whose LandCarve module is off or inert shows at
 tick 0.
@@ -1013,7 +1016,7 @@ for the press, release, strike and every hit, and overrides of the hit. Check `i
 | `reach(weapon)` | `true` when the active worm wields it and a **worm** (not itself, not a crate, drum, mine or the land) was in the swing at the weapon's last idle sweep (the engine's own sweep, one Update old) |
 | `mode(weapon[, mode])` | The gate mode, or sets it (claimant only): `true`, `nil, "not claimed"`, `"not the claimant"` |
 | `strike(weapon)` | Starts the engine's own swing now (the can-fire rules apply): `true`; `nil, "not wielded"`, `"busy"`, `"in hit"`, `"not claimed"` |
-| `result{cancel = bool, kill = bool, damage = n, impulse = f}` | Only inside a `hit` handler: `true`, else `nil, "not in hit"`. See below |
+| `result{cancel = bool, kill = bool, damage = n, impulse = f, level = bool}` | Only inside a `hit` handler: `true`, else `nil, "not in hit"`. See below |
 | `list()` | `{{name, mod, dig, mode}, ...}` |
 
 **The gate** (`dig = true`). When the active worm presses fire with the claimed weapon selected and the weapon is idle:
@@ -1044,7 +1047,10 @@ dispatched after it), then `done`:
 `{damage = n[, impulse = f]}` (0 to 1000, 0 to 100) damages and pushes by those numbers instead of the weapon's
 (`DamageIsPercentage` and `InstantKill` off for this hit; the engine still scales the impulse by its accuracy and
 `DoubleDamage` still doubles both); `{kill = true}` uses the engine's `InstantKill` (all the victim's health, applied
-at the turn-end death queue like any damage). Without a call the engine's own hit happens. The last call wins.
+at the turn-end death queue like any damage). `level = true` (with any of the others) knocks the victim back along
+the ground: the engine takes the knockback direction from the swing, which for the aimed Bat is the aim, so an
+upward aim lofts the victim far further than the same impulse from the Prod; `level` drops the vertical part of that
+direction for this hit only. Without a call the engine's own hit happens. The last call wins.
 A Bat strike can catch several worms: each gets its own `hit`.
 
 A `hit` handler runs inside the engine's strike loop, so everything that calls into the engine is refused there with
@@ -1055,7 +1061,8 @@ the turn-end death queue.
 
 To end a turn without a fall-back swing, set the weapon's `RetreatTimeOverride` (i32) with `wum.sim.weapon(name):set`
 at match start (0 ends the turn right after `PostLaunchDelay`), and use `strike()` from a dig hold. To dig straight
-down with an aimed weapon (the Bat), widen `MinAimAngle`/`MaxAimAngle` (f32, degrees) the same way.
+down with an aimed weapon (the Bat), widen `MinAimAngle`/`MaxAimAngle` (f32, signed degrees: `-85` and `85` for
+nearly straight down to nearly straight up; both `85` pins the aim straight up) the same way.
 
 The claims, gate modes, the held press, the hit count and whether the engine side is live are the Wormsign
 contributor `melange.melee`. The hooks (the melee entity's message handler 0x569930, Update 0x569b00, Release

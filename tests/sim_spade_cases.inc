@@ -68,7 +68,7 @@ wum.sim.melee.on("hit", "kWeaponBaseballBat", function(ev, w, tick, a, v, x, y, 
     s.inHitKill = r(wum.sim.worm(v):kill())
     s.inHitHold = wum.sim.holdTurn and r(wum.sim.holdTurn(10)) or "absent"
   else
-    wum.sim.melee.result({damage = 10, impulse = 0.15})
+    wum.sim.melee.result({damage = 10, impulse = 0.15, level = true})
   end
 end)
 wum.events.on("sim.wormKilled", function(ev, slot, tick) add("killed:" .. slot) end)
@@ -160,8 +160,9 @@ void TestSpade() {
            "carve, carveLine, kill and holdTurn are refused inside a hit: " + Storage("spade", "inHitHold"));
     Expect(sl::GetStats().carves == 6, "a refused carve inside a hit spends nothing");
     const sm::HitResult h2 = sm::OnHit(1, 2, at, 30, 0.12f);
-    Expect(!h2.cancel && h2.setDamage && h2.damage == 10 && h2.setImpulse && std::fabs(h2.impulse - 0.15f) < 1e-6f,
-           "later hits get the Shiv's numbers");
+    Expect(!h2.cancel && h2.setDamage && h2.damage == 10 && h2.setImpulse && std::fabs(h2.impulse - 0.15f) < 1e-6f &&
+               h2.level,
+           "later hits get the Shiv's numbers, knocked back along the ground");
     melee.weapon = 5;
     const sm::HitResult h3 = sm::OnHit(1, 2, at, 30, 0.12f);
     Expect(!h3.cancel && !h3.setDamage && sm::HitCount() == 2, "an unclaimed weapon's hit is the engine's own");
@@ -229,6 +230,31 @@ void TestSpade() {
     sl::ResetMatch();
     why = nullptr;
     Expect(sl::Carve(0, 0, 0, 5, &why) == -1 && std::string(why) == "indestructible", "an indestructible level answers so");
+
+    // The heightmap share of `removed`: a window around the engine's own footprint, and only cells that really went down.
+    {
+        sl::HeightGrid g;
+        g.w = 100;
+        g.h = 50;
+        g.min[0] = -1000.f, g.min[1] = -100.f, g.min[2] = -500.f;
+        g.extent[0] = 2000.f, g.extent[1] = 400.f, g.extent[2] = 1000.f;  // 20 units a cell both ways
+        sl::GroundWindow w;
+        const float mid[3] = {0.f, 0.f, 0.f};  // cell (50, 25)
+        Expect(sl::GroundFootprint(g, mid, 22.f, &w) && w.x0 == 47 && w.x1 == 53 && w.z0 == 22 && w.z1 == 28,
+               "ground window: the engine footprint padded by one: " + std::to_string(w.x0) + ".." +
+                   std::to_string(w.x1) + " / " + std::to_string(w.z0) + ".." + std::to_string(w.z1));
+        const float edge[3] = {-1000.f, 0.f, 495.f};
+        Expect(sl::GroundFootprint(g, edge, 22.f, &w) && w.x0 == 0 && w.z1 == 49, "ground window clamps to the grid");
+        const float off[3] = {5000.f, 0.f, 0.f};
+        Expect(!sl::GroundFootprint(g, off, 22.f, &w), "a sphere off the grid has no window");
+        Expect(sl::GroundFootprint(g, mid, 200.f, &w) && w.Width() <= sl::kGroundWindowMax + 8, "a window is bounded");
+        g.w = 4000;
+        Expect(!sl::GroundFootprint(g, mid, 200.f, &w), "a footprint wider than the window cap is not measured");
+        const float before[4] = {0.5f, 0.5f, 0.5f, 0.5f};
+        const float after[4] = {0.5f, 0.4999f, 0.49f, 0.4f};  // x400: 0, 0.04, 4 and 40 world units down
+        Expect(sl::CountLowered(before, after, 4, 400.f) == 2, "only cells lowered by a world unit or more count");
+        Expect(sl::CountLowered(before, before, 4, 400.f) == 0, "a repeat carve on a finished pit removes 0");
+    }
 
     melange::sim::RemoveTickHook(th);
     Expect(lua_gettop(fake::L) == 0 && fake::halts.empty(), "stack balanced");

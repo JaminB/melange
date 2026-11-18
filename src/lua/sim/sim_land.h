@@ -16,7 +16,7 @@
 // the same branch; the contributor also hashes the limits and whether the engine backend is live.
 namespace melange::simland {
 struct CarveOut {
-    int removed = 0;          // voxels removed (+1 when only the heightmap changed)
+    int removed = 0;          // voxels removed + heightmap cells lowered by kGroundDrop or more
     const char* why = nullptr;  // set when refused: "indestructible", "unavailable"
 };
 class Backend {
@@ -39,6 +39,30 @@ struct Limits {
 void SetLimits(const Limits& l);
 constexpr float kMinRadius = 1.f, kMaxRadius = 200.f;
 constexpr int kMaxLineSpheres = 16;
+
+// The heightmap share of `removed` (pure, so the self-test covers it). The engine's height carve sets Land.Changed
+// whenever the sphere is inside the heightmap's box, whether or not a cell went down, and it moves a cell only half
+// way to the sphere's floor per carve: the flag is no measure of what was dug. LandCarve instead snapshots the cells
+// under the sphere and counts those that went down by kGroundDrop world units or more.
+// Grid: W x H cells of normalised heights (index z*W + x) over the world box min..min+extent; a world height is
+// min.y + h * extent.y. The engine's own footprint (0x461ac0) is trunc((c - r) * W) .. trunc((c + r) * W) + 1 in
+// normalised units; GroundFootprint pads that by one cell and clamps it to the grid.
+constexpr float kGroundDrop = 1.f;
+constexpr int kGroundWindowMax = 48;  // a wider footprint (a huge radius on a fine grid) is not measured;
+                                      // a window is at most kGroundWindowMax + 8 cells a side
+struct HeightGrid {
+    int w = 0, h = 0;
+    float min[3] = {}, extent[3] = {};
+};
+struct GroundWindow {
+    int x0 = 0, z0 = 0, x1 = -1, z1 = -1;  // inclusive
+    int Width() const { return x1 - x0 + 1; }
+    int Depth() const { return z1 - z0 + 1; }
+};
+// False when the grid is unusable, the sphere misses it or the window is wider than kGroundWindowMax.
+bool GroundFootprint(const HeightGrid& g, const float pos[3], float radius, GroundWindow* out);
+// Cells whose height went down by at least kGroundDrop world units.
+int CountLowered(const float* before, const float* after, int n, float extentY);
 
 void ResetMatch();            // match VM created or closed
 // The digest of every carve of this match and the carve count, for the Wormsign contributor.

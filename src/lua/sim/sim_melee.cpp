@@ -300,7 +300,7 @@ int __cdecl LStrike(l5::State* L) {
     return 1;
 }
 
-// result{cancel=, kill=, damage=, impulse=} -> true | nil, "not in hit"
+// result{cancel=, kill=, damage=, impulse=, level=} -> true | nil, "not in hit"
 int __cdecl LResult(l5::State* L) {
     const auto& a = l5::A();
     if (a.type(L, 1) != l5::kTTable) return Fail(L, "wum.sim.melee.result(t): t must be a table");
@@ -313,6 +313,10 @@ int __cdecl LResult(l5::State* L) {
     a.pushstring(L, "kill");
     a.rawget(L, 1);
     r.kill = a.type(L, -1) == l5::kTBoolean && a.toboolean(L, -1) != 0;
+    a.settop(L, 1);
+    a.pushstring(L, "level");
+    a.rawget(L, 1);
+    r.level = a.type(L, -1) == l5::kTBoolean && a.toboolean(L, -1) != 0;
     a.settop(L, 1);
     a.pushstring(L, "damage");
     a.rawget(L, 1);

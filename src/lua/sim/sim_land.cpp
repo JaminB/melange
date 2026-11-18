@@ -99,6 +99,33 @@ bool Num(l5::State* L, int i, float* out) {
 void SetBackend(Backend* b) { g_backend = b; }
 void SetLimits(const Limits& l) { g_limits = l; }
 
+bool GroundFootprint(const HeightGrid& g, const float pos[3], float radius, GroundWindow* out) {
+    if (g.w <= 0 || g.h <= 0 || !(g.extent[0] > 0.f) || !(g.extent[2] > 0.f) || !(radius > 0.f)) return false;
+    const double cx = (static_cast<double>(pos[0]) - g.min[0]) / g.extent[0];
+    const double cz = (static_cast<double>(pos[2]) - g.min[2]) / g.extent[2];
+    const double rx = radius / static_cast<double>(g.extent[0]), rz = radius / static_cast<double>(g.extent[2]);
+    if (!std::isfinite(cx) || !std::isfinite(cz) || !std::isfinite(rx) || !std::isfinite(rz)) return false;
+    const double lo[2] = {(cx - rx) * g.w, (cz - rz) * g.h}, hi[2] = {(cx + rx) * g.w, (cz + rz) * g.h};
+    if (hi[0] < -1.0 || hi[1] < -1.0 || lo[0] > g.w + 1.0 || lo[1] > g.h + 1.0) return false;
+    if (hi[0] - lo[0] > kGroundWindowMax || hi[1] - lo[1] > kGroundWindowMax) return false;
+    auto clamp = [](double v, int n) { return v < 0 ? 0 : (v > n - 1 ? n - 1 : static_cast<int>(v)); };
+    out->x0 = clamp(std::floor(lo[0]) - 1, g.w);
+    out->z0 = clamp(std::floor(lo[1]) - 1, g.h);
+    out->x1 = clamp(std::floor(hi[0]) + 2, g.w);
+    out->z1 = clamp(std::floor(hi[1]) + 2, g.h);
+    return out->Width() > 0 && out->Depth() > 0 && out->Width() <= kGroundWindowMax + 8 &&
+           out->Depth() <= kGroundWindowMax + 8;
+}
+
+int CountLowered(const float* before, const float* after, int n, float extentY) {
+    int lowered = 0;
+    for (int i = 0; i < n; ++i) {
+        const float drop = (before[i] - after[i]) * extentY;
+        if (drop >= kGroundDrop) ++lowered;  // NaN compares false
+    }
+    return lowered;
+}
+
 void ResetMatch() {
     g_budget = Budget{};
     g_digest = 0xcbf29ce484222325ull;

@@ -31,6 +31,7 @@
 #include <windows.h>
 #include <safetyhook.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -59,7 +60,7 @@ constexpr uintptr_t kRelease = 0x5687d0, kIdleSweep = 0x5683b0, kIterate = 0x519
 constexpr uintptr_t kRecord = 0x5160e0, kTaskEntity = 0x68e4ca, kRecordIndex = 0x95c2a0, kActiveWorm = 0x95fb98;
 constexpr uintptr_t kWeaponNames = 0x90c920, kBaseMessageVt = 0x81aa14, kBaseMsg = 0x68b79e;
 constexpr int kWeaponNameCount = 0x45;
-constexpr uint32_t kState = 0x50, kProps = 0x58, kCollider = 0xb8, kOwnTask = 0xc8;
+constexpr uint32_t kState = 0x50, kProps = 0x58, kSwingDir = 0x68, kCollider = 0xb8, kOwnTask = 0xc8;
 constexpr uint16_t kNoRecord = 0xffff;
 constexpr const char* kMeleeNames[] = {"kWeaponBaseballBat", "kWeaponFirePunch", "kWeaponProd", "kWeaponNoMoreNails"};
 
@@ -306,11 +307,31 @@ void __fastcall HkImpact(uintptr_t self, void*) {
     const float impulse = fields ? Rd<float>(props + g_off.impulse) : 0.f;
     const sm::HitResult r = sm::OnHit(attacker, victim, pos, damage, impulse);
     if (g_log)
-        LOG_INFO("[melee] hit %d -> %d at (%.1f, %.1f, %.1f): cancel %d kill %d damage %s%.1f impulse %s%.2f, tick %u",
+        LOG_INFO("[melee] hit %d -> %d at (%.1f, %.1f, %.1f): cancel %d kill %d damage %s%.1f impulse %s%.2f level %d, "
+                 "tick %u",
                  attacker, victim, pos[0], pos[1], pos[2], r.cancel, r.kill, r.setDamage ? "=" : "~",
-                 r.setDamage ? r.damage : damage, r.setImpulse ? "=" : "~", r.setImpulse ? r.impulse : impulse,
+                 r.setDamage ? r.damage : damage, r.setImpulse ? "=" : "~", r.setImpulse ? r.impulse : impulse, r.level,
                  melange::sim::Tick());
     if (r.cancel) return;
+    // level: the DamageImpulseMessage takes its direction from the swing (+0x68, the aim for an aimed weapon like the
+    // Bat), so an upward aim lofts the victim; the vertical part is dropped for this one call and put back after.
+    float dirWas[3] = {};
+    bool levelled = false;
+    if (r.level && melange::gamestate::detail::Copy(self + kSwingDir, dirWas, sizeof dirWas)) {
+        const float h = std::sqrt(dirWas[0] * dirWas[0] + dirWas[2] * dirWas[2]);
+        if (std::isfinite(h) && h > 1e-4f) {
+            const float flat[3] = {dirWas[0] / h, 0.f, dirWas[2] / h};
+            levelled = Poke(self + kSwingDir, flat, sizeof flat);
+        }
+    }
+    struct PutBack {
+        uintptr_t at;
+        const float* was;
+        bool on;
+        ~PutBack() {
+            if (on) Poke(at + kSwingDir, was, 12);
+        }
+    } putBack{self, dirWas, levelled};
     if (!fields || (!r.kill && !r.setDamage && !r.setImpulse)) return g_hImpact.thiscall<void>(self);
     uint8_t saved[4][4];
     const uint32_t offs[4] = {g_off.damage, g_off.impulse, g_off.percent, g_off.instant};
@@ -382,6 +403,8 @@ bool Check() {
            Expect(0x567a95, {0x0f, 0xb7, 0x15, 0xa0, 0xc2, 0x95, 0x00, 0x52, 0xe8}) &&
            Expect(0x567c0c, {0x0f, 0xb7, 0x05, 0xa0, 0xc2, 0x95, 0x00, 0x50, 0xe8}) &&
            Expect(0x567c19, {0x8b, 0x40, 0x18, 0x50, 0xe8}) &&
+           // the DamageImpulseMessage's direction is the swing's +0x68: add esi, 0x68 ... call 0x518c20
+           Expect(0x568020, {0x83, 0xc6, 0x68}) && Expect(0x56802a, {0xe8, 0xf1, 0x0b, 0xfb, 0xff}) &&
            // the record helper: mov eax,[0x95c2f0]; sub eax,[0x95c2ec]
            Expect(kRecord, {0xa1, 0xf0, 0xc2, 0x95, 0x00, 0x2b, 0x05, 0xec, 0xc2, 0x95, 0x00}) &&
            Expect(kTaskEntity, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x14}) &&

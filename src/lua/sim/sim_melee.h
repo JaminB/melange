@@ -52,6 +52,7 @@ struct HitResult {
     bool cancel = false;
     bool kill = false;
     bool setDamage = false, setImpulse = false;
+    bool level = false;  // the knockback along the ground: the swing direction's vertical part is dropped
     float damage = 0, impulse = 0;
 };
 // A claimed weapon struck a worm: runs the "hit" handlers synchronously and returns what they asked for. Not claimed

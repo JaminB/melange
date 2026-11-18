@@ -9,11 +9,13 @@ for sim mods, and render-only worm poses for client mods. Every sim effect is de
 
 - `wum.sim.carve(x, y, z, radius)` and `wum.sim.carveLine(...)`: remove land without an explosion (no damage, no
   impulse, no camera hold); water, PERM frames and indestructible levels are never carved. A fixed budget (4 calls a
-  tick, 900 spheres a turn), hashed as `melange.land`. The client hears every land change as `Land.NewShape`.
+  tick, 900 spheres a turn), hashed as `melange.land`. `removed` counts the voxels and the heightmap cells that went
+  down. The client hears every land change as `Land.NewShape`.
 - `worm:kill{explode, grave, throes}`: the engine's own death at once (throes up to 10 s); `sim.wormKilled` when the
   worm unspawns. `worm:aim()`: the aim pitch and direction. Hashed as `melange.wormkill`.
 - `wum.sim.melee`: claim a vanilla melee weapon, gate its fire into "dig" (swallowed, the turn goes on) or "strike",
-  hear press, release, strike, hit and done, `reach()` (worms only) and `strike()`, and cancel or override a hit.
+  hear press, release, strike, hit and done, `reach()` (worms only) and `strike()`, and cancel or override a hit
+  (`level` knocks back along the ground).
   Hooks are on only in matches with a claim; hashed as `melange.melee`.
 - `wum.render.wormPose`, `wormCopy`, `wormBones`, `wormPoseStatus`: lay a worm down, mount, bend, move its hands, cut
   its head to a stump, hide or carry its hat, and draw the severed head, by patching the skinning palette per draw.
