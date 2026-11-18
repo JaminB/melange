@@ -1,8 +1,11 @@
 # Grave Spade RE: melee fire input, hit events and turn end
 
+> **Status:** built and shipped in Melange 0.16.0. These are the research notes written before and during the
+> work; the API as built is documented in [lua-api.md](lua-api.md), and where the two differ lua-api.md is right.
+
 Reverse-engineering notes for the Kindjal Grave Spade (Melange 0.16.0). They cover how a melee weapon gets its fire
 input, how its strike finds and damages a worm, and how its turn ends. They end with the sim API and C++ hooks that
-0.16.0 should add. Nothing here is implemented yet.
+0.16.0 should add. All of it was built in 0.16.0 (see the status note above).
 
 - **Build:** WormsMayhem.exe build #1077, the build `src/gameplay/worm_anchor.cpp` targets.
 - **Sources:** static analysis only: the Ghidra export in `melange-private/re/out`, plus capstone disassembly of the
@@ -279,7 +282,7 @@ source.
 The Kanly Melee feature (melange-plugins#43) is scheme data only: Ammo and Crate are 0 for banned weapons
 (`plugins/kanly/mod/schemes/kanly-melee.json`). It has no melee hook to reuse.
 
-## 4. Proposed sim API (Melange 0.16.0, `wum.sim.melee`, Lua 5.0)
+## 4. The sim API (proposed here, built in Melange 0.16.0, `wum.sim.melee`, Lua 5.0)
 
 It mirrors `wum.sim.weapons`. Every call returns `nil, reason` on a refusal.
 

@@ -1,5 +1,8 @@
 # Grave Spade RE: carving terrain from the sim
 
+> **Status:** built and shipped in Melange 0.16.0. These are the research notes written before and during the
+> work; the API as built is documented in [lua-api.md](lua-api.md), and where the two differ lua-api.md is right.
+
 Reverse-engineering notes for a deterministic `wum.sim.carve` (Melange 0.16.0, the Kindjal Grave Spade). Build #1077
 (`WormsMayhem.exe`, 5 713 408 bytes). Every address is a VA in that build. This page covers the land side only:
 how the game removes voxels, why the result is the same on every peer, what it costs, what debris comes with it,
@@ -140,7 +143,7 @@ learns about a carve in one of two ways:
 
 - **Now:** the sim sends it, as `wum.sim.sendString("Kindjal.Dig", "x,y,z,r,removed")`, the same way Kindjal's
   `Kindjal.Burst` works today.
-- **Proposed for 0.16.0:** a bus decoder for `LandNewShapeMessage` (vtable `0x81c444`: `radius` at +0x08, `pos`
+- **Built in 0.16.0 (proposed here):** a bus decoder for `LandNewShapeMessage` (vtable `0x81c444`: `radius` at +0x08, `pos`
   at +0x0c). Then `wum.events.on("Land.NewShape", fn)` gives the client every carve, with its position and radius,
   including vanilla ones. It is a two-line addition to `src/core/bus_decoders.cpp`, where the class is already
   listed without a decoder.
@@ -199,7 +202,7 @@ The proposed limits keep the spade far below the vanilla bursts: **at most 4 car
 turn** (`[Land] CarvesPerTick`, `CarvesPerTurn`). A held dig at one scoop every 15 to 25 ticks is 60 to 100 carves
 in a 30 s turn. A refused carve answers `nil, "budget"`, so a mod cannot hitch or flood the game.
 
-## Proposed API (Melange 0.16.0)
+## The API (proposed here, built in Melange 0.16.0)
 
 ### Lua (sim VM, Lua 5.0)
 

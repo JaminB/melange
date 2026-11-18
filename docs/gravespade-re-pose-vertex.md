@@ -1,5 +1,9 @@
 # Grave Spade RE: the CPU-skinned vertex path (angle "vertex")
 
+> **Status:** the route recommended here (the `0x790cd0` palette detour) shipped in Melange 0.16.0 (option M); options V and C
+> were not built. These are the research notes written before and during the
+> work; the API as built is documented in [lua-api.md](lua-api.md), and where the two differ lua-api.md is right.
+
 These notes follow [gravespade-re-worm.md](gravespade-re-worm.md). That document found that build #1077 skins worms
 on the CPU (`XOglDrawAction` slot 60 `0x790880` drops every `Skinned` vertex program). This angle was the fallback:
 if the bone matrices cannot be reached, find the CPU-skinned output vertex buffer per worm, and work out whether we can

@@ -64,6 +64,9 @@ export const GROUPS = [
 			{ slug: 'gravespade-re-carve', label: 'RE notes: carving land' },
 			{ slug: 'gravespade-re-worm', label: 'RE notes: kills and poses' },
 			{ slug: 'gravespade-re-input', label: 'RE notes: melee input' },
+			{ slug: 'gravespade-re-pose-anim', label: 'RE notes: worm animation' },
+			{ slug: 'gravespade-re-pose-cpu-skin', label: 'RE notes: CPU-skinned poses' },
+			{ slug: 'gravespade-re-pose-vertex', label: 'RE notes: skinned vertices' },
 		],
 	},
 	{

@@ -1,5 +1,8 @@
 # Grave Spade RE: posing worms on the CPU skinning path
 
+> **Status:** built and shipped in Melange 0.16.0. These are the research notes written before and during the
+> work; the API as built is documented in [lua-api.md](lua-api.md), and where the two differ lua-api.md is right.
+
 These are research notes for the "cpu-skin" angle of the Grave Spade execution (prone victim, mounted attacker, hands
 on the spade). Build #1077 skins worms on the CPU ([gravespade-re-worm.md](gravespade-re-worm.md), update r1), so the
 GPU palette route of MiragePose 0.16.0 is dead there. This page finds the CPU route, plans the hook, and records a

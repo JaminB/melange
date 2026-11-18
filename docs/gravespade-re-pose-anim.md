@@ -1,5 +1,8 @@
 # Grave Spade RE: the worm animation system and the render-only root transform
 
+> **Status:** built and shipped in Melange 0.16.0. These are the research notes written before and during the
+> work; the API as built is documented in [lua-api.md](lua-api.md), and where the two differ lua-api.md is right.
+
 These notes are for the Grave Spade execution: the victim lies down and the attacker mounts it. They cover the worm's
 animation system on build #1077 and a render-only way to override it, which was **proven live in instance D on
 2026-11-18**.
@@ -272,7 +275,7 @@ ap.set 1 Fire2Bat 0.5 1 keep 30 <vyaw+180> 0 <dx> <dy> <dz>
 - Whether `0x5a4740` runs per render frame or per 20 ms tick: it scales by `(now - last)/20`, so it is frame-driven
   **[I]**. A post-hook re-applies the pose on every call either way.
 
-### Proposed API (for the implementer)
+### The API (proposed here for the implementer, built in Melange 0.16.0)
 
 This replaces the GPU-palette `wormPose` back end on CPU-skinned builds. Same Lua shape, new back end:
 

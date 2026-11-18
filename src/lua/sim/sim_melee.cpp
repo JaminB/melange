@@ -517,7 +517,8 @@ size_t HashBytes(uint8_t* out, size_t cap) {
         out[n++] = c.dig;
         out[n++] = static_cast<uint8_t>(c.mode);
     }
-    out[n++] = g_held.on;
+    // the held press and its mode (dig or strike) share a byte, so a mode split shows at the press tick
+    out[n++] = static_cast<uint8_t>((g_held.on ? 1 : 0) | (static_cast<uint8_t>(g_held.mode) << 1));
     out[n++] = static_cast<uint8_t>(g_held.slot & 0xff);
     out[n++] = static_cast<uint8_t>(g_held.claim & 0xff);
     memcpy(out + n, &g_held.pressTick, 4);

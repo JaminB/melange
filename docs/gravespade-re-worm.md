@@ -1,5 +1,8 @@
 # Grave Spade RE: killing, pinning and posing a worm
 
+> **Status:** built and shipped in Melange 0.16.0. These are the research notes written before and during the
+> work; the API as built is documented in [lua-api.md](lua-api.md), and where the two differ lua-api.md is right.
+
 These are research notes for the Kindjal Grave Spade execution (Melange 0.16.0). They cover three questions:
 
 - (a) a deterministic sim-side instant kill;
@@ -247,7 +250,7 @@ Useful clips (329 in `XCULLEDboggyb`):
 | Victim | `Cower`, `Terror`, `Pray`, `Cover_Head`, `ClutchChest`, `Wounded`, `Scared` |
 | Attacker | `Fire1Bat`, `Fire2Bat` (overhead chop), `FireProd`, `Shake_Fist`, `EvilGrin`, `PointAndLaugh`, `Victorious_Grin`, `TauntBat` |
 
-## Proposed API (Melange 0.16.0) [P]
+## The API (proposed here, built in Melange 0.16.0) [P]
 
 ### Sim (Lua 5.0, deterministic, hashed)
 
