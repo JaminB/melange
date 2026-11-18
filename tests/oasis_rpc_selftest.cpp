@@ -234,6 +234,8 @@ void TestRpc() {
     Expect(sawSalt, "ini.get: the grant salt is masked in keys");
     Expect(sawLive, "ini.get: live flag from the schema");
 
+    // config:: caches reads: this one is cached, so the check after ini.set proves ini.set drops the cache
+    Expect(melange::config::GetInt("Oasis", "MaxClients", 0) == 4, "config: the value before ini.set");
     r = Call(&rpc::IniSet, R"({"section":"Oasis","key":"MaxClients","value":"6"})");
     Expect(r.ok && r.json.find("\"restart\":true") != std::string::npos && r.json.find("\"changed\":true") != std::string::npos,
            "ini.set: restart key", r.json + r.message);
@@ -241,6 +243,21 @@ void TestRpc() {
     want.replace(want.find("MaxClients=4"), 12, "MaxClients=6");
     ExpectEq(ReadAll(), want, "ini.set: only the value changed, comments and bytes kept");
     Expect(melange::config::GetInt("Oasis", "MaxClients", 0) == 6, "ini.set: GetPrivateProfileString sees the new value");
+    // a write through config:: is seen at once; a write from outside (another process, a hand edit) once the watcher has
+    // seen the file change
+    melange::config::SetString("Extra", "Cached", "1");
+    Expect(melange::config::GetString("Extra", "Cached", "") == "1", "config: SetString is seen on the next read");
+    Expect(melange::config::GetString("Extra", "Missing", "d") == "d", "config: a missing key reads its default");
+    Expect(melange::config::GetString("Extra", "Missing", "e") == "e", "config: a cached missing key still reads the caller's default");
+    WritePrivateProfileStringW(L"Extra", L"Cached", L"2", g_path.c_str());
+    bool seen = false;
+    for (int i = 0; i < 40 && !seen; ++i) {
+        seen = melange::config::GetString("Extra", "Cached", "") == "2";
+        if (!seen) Sleep(100);
+    }
+    Expect(seen, "config: an outside write is seen within 4 s");
+    WritePrivateProfileStringW(L"Extra", L"Cached", nullptr, g_path.c_str());
+    melange::config::Invalidate();
 
     r = Call(&rpc::IniSet, R"({"section":"Oasis","key":"MaxClients","value":"6"})");
     Expect(r.ok && r.json.find("\"changed\":false") != std::string::npos, "ini.set: same value is a no-op");

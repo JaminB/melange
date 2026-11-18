@@ -130,6 +130,7 @@ class GameHost final : public Host {
     void DeleteData(const std::string& id) override {
         const std::wstring section = game::Widen("Mod." + id);
         WritePrivateProfileStringW(section.c_str(), nullptr, nullptr, config::Path().c_str());
+        config::Invalidate();
         install::DeleteTree(game::DataDir() + L"\\mods\\" + game::Widen(id));
     }
 };
