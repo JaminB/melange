@@ -1461,6 +1461,34 @@ int WormBones(lua_State* L) {
     return 1;
 }
 
+// wum.render.hideHud(frames) -> true | false, "unavailable": the engine's HUD left out of the picture for this frame and
+// the frames - 1 after it (1..600, default 3); wum.render.hideHud(nil | false | 0) ends this mod's hiding -> true.
+int HideHud(lua_State* L) {
+    ModRec* m = Current();
+    Gen* g = CurrentGen();
+    if (!m || !g) return luaL_error(L, "wum.render.hideHud needs a mod context");
+    if (lua_isnoneornil(L, 1) || (lua_isboolean(L, 1) && !lua_toboolean(L, 1)) ||
+        (lua_isinteger(L, 1) && lua_tointeger(L, 1) == 0)) {
+        render::ClearHideEngineHud(m);
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    int isInt = 0;
+    const lua_Integer n = lua_tointegerx(L, 1, &isInt);
+    if (!isInt || n < 1 || n > camlogic::kMaxFrames) return luaL_argerror(L, 1, "frames must be an integer from 1 to 600");
+    if (!render::HideEngineHud(m, static_cast<int>(n))) {
+        lua_pushboolean(L, 0);
+        lua_pushliteral(L, "unavailable");
+        return 2;
+    }
+    if (!g->hudCleanup) {
+        g->hudCleanup = true;
+        g->cleanups.push_back([m] { render::ClearHideEngineHud(m); });
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 // wum.render.wormPoseStatus() -> "ok" | "untested" | "no skinned worm drawn yet" | "unsupported" | "disabled",
 // identifiedDraws
 int WormPoseStatus(lua_State* L) {
@@ -1482,7 +1510,7 @@ void Shared(lua_State* L, int wum) {
                                        {"timing", Timing}, {"cameraOverride", CameraOverride},
                                        {"gameCamera", GameCamera}, {"wormPose", WormPose},
                                        {"wormCopy", WormCopy}, {"wormBones", WormBones},
-                                       {"wormPoseStatus", WormPoseStatus}, {nullptr, nullptr}};
+                                       {"wormPoseStatus", WormPoseStatus}, {"hideHud", HideHud}, {nullptr, nullptr}};
     static const luaL_Reg kPostfx[] = {{"list", PfxList}, {"enable", PfxEnable}, {"setParam", PfxSetParam},
                                        {"setTransient", PfxSetTransient}, {"getParam", PfxGetParam}, {nullptr, nullptr}};
     lua_newtable(L);

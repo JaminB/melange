@@ -341,6 +341,18 @@ bool ClearCameraOverride(const void* owner) {
     return true;
 }
 bool CameraOverridden() { return g_ovOwner != nullptr; }
+const void* g_hudOwner = nullptr;
+int g_hudFrames = 0;
+bool g_hudOk = true;
+bool HideEngineHud(const void* owner, int frames) {
+    if (!g_hudOk) return false;
+    g_hudOwner = owner;
+    g_hudFrames = frames;
+    return true;
+}
+void ClearHideEngineHud(const void* owner) {
+    if (!owner || owner == g_hudOwner) g_hudOwner = nullptr, g_hudFrames = 0;
+}
 bool WorldToScreen(const float*, float*, float*, float*) { return false; }
 void WindowSize(int* w, int* h) { *w = 1024, *h = 768; }
 Timing GetTiming() { return {}; }
@@ -1548,6 +1560,21 @@ void TestCameraOverride() {
     ExpectEq(Eval("cam", "return wum.render.cameraOverride(nil), wum.render.cameraOverride()"), "true\tfalse",
              "nil clears the mod's own override once");
     ExpectEq(Eval("cam", "return wum.render.camera().overridden"), "false", "camera() after the clear");
+
+    // wum.render.hideHud (Melange 0.16)
+    render::g_hudOwner = nullptr;
+    ExpectEq(Eval("cam", "return wum.render.hideHud(4)"), "true", "hideHud hides the engine HUD");
+    Expect(render::g_hudOwner && render::g_hudFrames == 4, "hideHud passes the frames");
+    ExpectEq(Eval("cam", "return wum.render.hideHud(nil)"), "true", "hideHud(nil) ends it");
+    Expect(!render::g_hudOwner, "the mod's hiding is cleared");
+    ExpectEq(Eval("cam", "return wum.render.hideHud(1), wum.render.hideHud(false)"), "true	true", "false ends it too");
+    Expect(!render::g_hudOwner, "cleared by false");
+    render::g_hudOk = false;
+    ExpectEq(Eval("cam", "return wum.render.hideHud(3)"), "false	unavailable", "unavailable without MirageNoHud");
+    render::g_hudOk = true;
+    for (const char* code : {"wum.render.hideHud(601)", "wum.render.hideHud(-1)", "wum.render.hideHud(1.5)",
+                             "wum.render.hideHud('x')"})
+        Expect(Eval("cam", code).rfind("ERR:", 0) == 0, std::string("raises: ") + code);
     render::g_haveCam = false;
     ExpectEq(Eval("cam", "return wum.render.camera() == nil, wum.render.gameCamera() == nil"), "true\ttrue",
              "no camera outside rendering");

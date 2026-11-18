@@ -17,6 +17,8 @@ for sim mods, and render-only worm poses for client mods. Every sim effect is de
   Hooks are on only in matches with a claim; hashed as `melange.melee`.
 - `wum.render.wormPose`, `wormCopy`, `wormBones`, `wormPoseStatus`: lay a worm down, mount, bend, move its hands, cut
   its head to a stump, hide or carry its hat, and draw the severed head, by patching the skinning palette per draw.
+- `wum.render.hideHud(frames)`: leave the engine's HUD (names, energy, team bars, timer, wind) out of the picture for
+  a cut-scene; mods' HUD draws stay.
 - `wum.game.worms()` entries carry `aim` (the aim pitch).
 
 Every player needs the same Melange: the three new Wormsign contributors differ from 0.15 at tick 0.
