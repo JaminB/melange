@@ -886,6 +886,11 @@ the same tick, and nothing waits on the camera, an active object or any other pe
   would otherwise leave the spectators paused 2 s short of their own deferred turn start while it waits for the new
   player's lead. Verified on LocalNet with camera keys pressed on the spectator during the hold: both machines hold
   and release at the same ticks, Wormsign's hashes agree, no time-sync abort.
+- A hold shorter than a spectator's lag (about 5 s) used to freeze the match (0.16): the spectator had already
+  received every time-sync of the hold, including that last -1, when its own `Turn.Ended` set its lead to 0, so its
+  sim paused for good while the other machine waited at its `Turn.Started`. During a hold, on a machine whose current
+  player is not local, `SimTurnHoldNet` now sets a lead of exactly 0 to -1 through the engine's own setter (the value
+  the vanilla end-of-turn and surrender paths use), and the spectator runs on to its own deferred turn start.
 
 With Wormsign on, every sim mod's state is part of the per-tick hash, so a mod that computes differently on two machines is caught at the tick it happens, with the mod named. Wormsign hashes the mod's globals and `wum.sim.storage` (three tables deep, in any key order; functions and userdata count by type only), and whatever the mod passes to `wum.sim.hash` in that tick. Locals and upvalues are not visible to it: a mod that keeps its state there can pass it to `wum.sim.hash`.
 
@@ -1001,6 +1006,11 @@ did not kill stays alive.
 
 The three hooks that apply the options (after `TimeToDie` 0x5adbf0, on the death explosion 0x5a9400 and on the
 gravestone 0x5a9310) are enabled in a match only once a script has killed a worm, and act only on worms a script killed.
+
+`grave=true` makes the gravestone the way a vanilla death does. The engine line `Xrm | Error creating Grave.<style> -
+This section (N) must be explicitly loaded` that sometimes follows it is the engine's own: the same line follows vanilla
+deaths (explosions, no script) in the same test sessions, online and offline, for teams whose grave style's resource
+section was not loaded. It is not caused by `worm:kill`.
 
 ### Melee weapons: `wum.sim.melee`
 

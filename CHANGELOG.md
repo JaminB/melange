@@ -2,30 +2,29 @@
 
 ## 0.16.0
 
-Tools for a digging, executing melee weapon (the Kindjal Grave Spade): land removal, scripted kills and melee control
-for sim mods, and render-only worm poses for client mods. Every sim effect is deterministic and hashed by Wormsign.
+Tools for a digging, executing melee weapon (the Kindjal Grave Spade). Every sim effect is deterministic and hashed
+by Wormsign.
 
 ### Added
 
-- `wum.sim.carve(x, y, z, radius)` and `wum.sim.carveLine(...)`: remove land without an explosion (no damage, no
-  impulse, no camera hold); water, PERM frames and indestructible levels are never carved. A fixed budget (4 calls a
-  tick, 900 spheres a turn), hashed as `melange.land`. `removed` counts the voxels and the heightmap cells that went
-  down. The client hears every land change as `Land.NewShape`.
+- `wum.sim.carve` and `wum.sim.carveLine`: remove land without an explosion (no damage, no impulse); water, PERM
+  frames and indestructible levels are never carved. A fixed budget (4 calls a tick, 900 spheres a turn), hashed as
+  `melange.land`. The client hears every change as `Land.NewShape`.
 - `worm:kill{explode, grave, throes}`: the engine's own death at once (throes up to 10 s); `sim.wormKilled` when the
   worm unspawns. `worm:aim()`: the aim pitch and direction. Hashed as `melange.wormkill`.
 - `wum.sim.melee`: claim a vanilla melee weapon, gate its fire into "dig" (swallowed, the turn goes on) or "strike",
-  hear press, release, strike, hit and done, `reach()` (worms only) and `strike()`, and cancel or override a hit
-  (`level` knocks back along the ground).
-  Hooks are on only in matches with a claim; hashed as `melange.melee`.
-- `wum.render.wormPose`, `wormCopy`, `wormBones`, `wormPoseStatus`, `wormPoseCaps`: render-only worm poses. Lay a
-  worm on its back or carry it onto another (`body`: the drawn mesh's transform, so the hat and the shadow follow),
-  hold the game's own animation clips and pose sliders (`clips`, `sliders`), bend it and put its hands on world
-  points (the skinning palette), cut its head to a stump with the hat hidden, and draw the severed head. Build #1077
-  skins worms on the CPU: the palette is patched around the engine's own skinned-shape draw, and `wormBones` reports
-  the posed bones there.
-- `wum.render.hideHud(frames)`: leave the engine's HUD (names, energy, team bars, timer, wind) out of the picture for
-  a cut-scene; mods' HUD draws stay.
+  hear press, release, strike, hit and done, `reach()` and `strike()`, and cancel or override a hit. Hashed as
+  `melange.melee`.
+- `wum.render.wormPose`, `wormCopy`, `wormBones`, `wormPoseStatus`, `wormPoseCaps`: render-only worm poses on the
+  CPU-skinned build #1077. Lay a worm down or carry it (`body`), hold the game's animation clips and pose sliders,
+  put its hands on world points, cut its head to a stump and draw the severed head.
+- `wum.render.hideHud(frames)`: leave the engine's HUD out of the picture for a cut-scene.
 - `wum.game.worms()` entries carry `aim` (the aim pitch).
+
+### Fixed
+
+- Online, a `wum.sim.holdTurn` released sooner than about 5 s froze the match: the spectator's sim stopped at the
+  start of the hold. Spectators now run through a hold to their own turn start.
 
 Every player needs the same Melange: the three new Wormsign contributors differ from 0.15 at tick 0.
 
