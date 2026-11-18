@@ -75,16 +75,23 @@ bool Alive(const WormInfo& w);                           // active, health > 0, 
 struct KillOpts {
     bool explode = true;     // the small death explosion (damage, FX and an Explosion message) at the end of the throes
     bool grave = true;       // the gravestone
-    uint32_t throes = 150;   // death-throes length in ticks (1..150; the engine's own is 150 = 3 s)
+    uint32_t throes = 150;   // death-throes length in ticks (1..500; the engine's own is 150 = 3 s)
 };
-constexpr uint32_t kMaxThroes = 150;
-// Records the options and posts the kill. why: "no worm", "dead", "drowning", "unavailable".
+// Up to 10 s: the throes keep the body (and a wormCopy head) drawn while a client cinematic plays over it.
+constexpr uint32_t kMaxThroes = 500;
+// A posted kill the engine has not confirmed (TimeToDie) after this many ticks is dropped.
+constexpr uint32_t kKillConfirmTicks = 25;
+// Records the options and posts the kill. why: "no worm", "dead", "drowning", "in hit", "unavailable".
 bool Kill(int slot, const KillOpts& o, const char** why);
-// The options of a kill this match made for the slot that has not finished yet (the engine hooks ask).
+// A kill this match made for the slot that has not finished yet (posted or dying), with its options.
 bool KillPending(int slot, KillOpts* out);
+// The engine's TimeToDie for the slot (WormAnchor's hook): confirms a posted kill (stage dying) and gives its options.
+bool KillDue(int slot, KillOpts* out);
+// A confirmed kill in its throes: the death explosion and gravestone hooks read its options.
+bool KillDying(int slot, KillOpts* out);
 bool AnyKillPending();
-// Sim tick hook: a killed worm that has left the match (inactive or gone) raises sim.wormKilled(slot, tick) once.
-// Returns the number of kills still pending.
+// Sim tick hook: a dying worm that has left the match (inactive or gone) raises sim.wormKilled(slot, tick) once; a
+// posted kill that the engine never confirmed is dropped. Returns the number of kills still pending.
 int PollKills();
 using KillFn = void (*)(int slot, bool posted, void* user);  // posted: the kill was posted; false: it completed
 void SetKillObserver(KillFn fn, void* user);

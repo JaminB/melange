@@ -24,7 +24,9 @@ public:
     virtual int WeaponIndex(const char* name) = 0;   // the kNames index (1..0x44) of a melee weapon, -1 otherwise
     virtual int ActiveSlot() = 0;                    // the worm whose turn it is, -1
     virtual int WeaponOf(int slot) = 0;              // its selected weapon index, -1
-    virtual bool TargetInRange() = 0;                // the melee idle sweep's Weapon.Melee.TargetInRange
+    // A worm (not the attacker, not a crate, drum, mine or the land) was in the swing at the wielded entity's last
+    // idle sweep (the engine's sweep, filtered to worm records for a claimed weapon).
+    virtual bool WormInRange() = 0;
     virtual int EntityState() = 0;                   // the wielded melee entity's state (0 idle), -1 when none
     virtual const char* Strike() = 0;                // starts the vanilla swing; nullptr, or "not wielded" / "busy"
 };
@@ -55,12 +57,14 @@ struct HitResult {
 // A claimed weapon struck a worm: runs the "hit" handlers synchronously and returns what they asked for. Not claimed
 // (attacker's weapon): an empty result.
 HitResult OnHit(int attacker, int victim, const float pos[3], float damage, float impulse);
+// True while a "hit" handler runs (inside the engine's strike loop): engine-calling sim functions refuse ("in hit").
+bool InHit();
 bool Claimed(int weaponIndex);
 void Tick();                                         // sim tick hook: held validation, then the queued events
 void ResetMatch();
 
 size_t HashBytes(uint8_t* out, size_t cap);
-constexpr size_t kHashBytes = kMaxClaims * 4 + 7 + 4 + 2;
+constexpr size_t kHashBytes = kMaxClaims * 4 + 7 + 4 + 2 + 1;
 uint32_t HitCount();
 
 // Called from sim_api.cpp's PushWum: the mod's wum.sim.melee table.

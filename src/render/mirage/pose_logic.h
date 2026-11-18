@@ -145,10 +145,20 @@ struct Edit {
     bool hasTarget = false;         // hands: put the wrist pivot here (world) instead of moving by `move`
     float target[3] = {0, 0, 0};
 };
+// Rigid attachments on the head (hat, moustache, glasses: separate unskinned draws placed by their `model` matrix).
+enum class Attach : unsigned char { Keep = 0, Hide = 1, Follow = 2 };
 struct Spec {
     Edit root;                       // the whole worm (default pivot: the main bone's)
     Edit group[kGroups];             // head, tail, leftHand, rightHand (default pivot: kGroupPivotBone)
     bool stump = false;              // flatten the head subtree onto the neck plane
+    Attach attach = Attach::Keep;    // hide.attachments: "hide" or "follow" (follow is hide under a stump)
+    // No edit, no stump, no attachment rule: the pose only tracks the bones (wormBones) and changes nothing drawn.
+    bool Empty() const {
+        if (root.on || stump || attach != Attach::Keep) return false;
+        for (const Edit& g : group)
+            if (g.on) return false;
+        return true;
+    }
 };
 
 inline M4 EditDelta(const Edit& e, const float defaultPivot[3]) {
@@ -169,8 +179,9 @@ inline void NeckFrame(const float* palette, const M4& delta, float neck[3], floa
 }
 
 // in: the game's palette; out: the posed one. Deltas: the root first, then the group's own edit (about its pivot
-// after the root moved it), then the stump on the head subtree.
-inline void Compose(const float* in, const Spec& s, float* out) {
+// after the root moved it), then the stump on the head subtree. headDelta (optional): the head group's world delta
+// without the stump, which head attachments that follow the pose get.
+inline void Compose(const float* in, const Spec& s, float* out, M4* headDelta = nullptr) {
     float rootPivot[3];
     PivotWorld(in, 0, rootPivot);
     const M4 root = s.root.on ? EditDelta(s.root, rootPivot) : Identity();
@@ -184,6 +195,7 @@ inline void Compose(const float* in, const Spec& s, float* out) {
         Point(Mul(BoneOf(in, kGroupPivotBone[g]), root), kPivot[kGroupPivotBone[g]], p);
         groupDelta[g] = Mul(root, EditDelta(s.group[g], p));
     }
+    if (headDelta) *headDelta = groupDelta[kHead];
     M4 stump = Identity();
     if (s.stump) {
         float neck[3], up[3];
@@ -216,17 +228,61 @@ inline void ComposeCopy(const float* in, const M4& head, float* out) {
 
 // Which worm a skinned draw is: the main bone's pivot against each worm's feet plus the centre offset. Returns the
 // index into `feet` of the nearest within `maxDist`, -1 otherwise.
-constexpr float kCentreY = 19.f;   // the main pivot sits about this far above the feet (bind tail tip y = -12.8)
-inline int Identify(const float* palette, const float (*feet)[3], int n, float maxDist) {
+constexpr float kCentreY = 19.f;   // the first guess: the main pivot sits about this far above the feet
+inline int Identify(const float* palette, const float (*feet)[3], int n, float maxDist, float centreY = kCentreY) {
     float p[3];
     PivotWorld(palette, 0, p);
     int best = -1;
     float bestD = maxDist * maxDist;
     for (int i = 0; i < n; ++i) {
-        const float d[3] = {p[0] - feet[i][0], p[1] - (feet[i][1] + kCentreY), p[2] - feet[i][2]};
+        const float d[3] = {p[0] - feet[i][0], p[1] - (feet[i][1] + centreY), p[2] - feet[i][2]};
         const float dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
         if (dd < bestD) bestD = dd, best = i;
     }
     return best;
+}
+
+// The centre offset learned in game: a skinned draw whose main pivot is horizontally on one worm (within kSameXZ)
+// while every other worm is far (kOtherXZ) is unambiguous whatever the height, so its height over the feet is a
+// sample. kCentreY is only the first guess; after a few samples Identify uses the running mean, so two worms close
+// together (the mount) are told apart by a measured offset, not a guess.
+struct Centre {
+    static constexpr float kSameXZ = 8.f, kOtherXZ = 40.f, kMinY = 0.f, kMaxY = 40.f;
+    static constexpr int kWindow = 32;
+    float y = kCentreY;
+    int samples = 0;
+    // Returns true when the draw was a sample.
+    bool Sample(const float p[3], const float (*feet)[3], int n) {
+        int hit = -1;
+        for (int i = 0; i < n; ++i) {
+            const float dx = p[0] - feet[i][0], dz = p[2] - feet[i][2];
+            const float h = dx * dx + dz * dz;
+            if (h <= kSameXZ * kSameXZ) {
+                if (hit >= 0) return false;  // two worms under the pivot
+                hit = i;
+            } else if (h < kOtherXZ * kOtherXZ) {
+                return false;  // another worm close by: ambiguous
+            }
+        }
+        if (hit < 0) return false;
+        const float dy = p[1] - feet[hit][1];
+        if (!(dy >= kMinY && dy <= kMaxY)) return false;
+        ++samples;
+        const int w = samples < kWindow ? samples : kWindow;
+        y += (dy - y) / static_cast<float>(w);
+        return true;
+    }
+};
+
+// Rigid head attachments: the attachment draw's origin (its model translation) within `radius` of one of the
+// worm's unposed head bone pivots (bones 4..15) belongs to that head.
+constexpr int kHeadFirst = 4, kHeadBones = 12;
+constexpr float kAttachRadius = 9.f;
+inline bool NearHead(const float t[3], const float (*head)[3], float radius = kAttachRadius) {
+    for (int i = 0; i < kHeadBones; ++i) {
+        const float d[3] = {t[0] - head[i][0], t[1] - head[i][1], t[2] - head[i][2]};
+        if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= radius * radius) return true;
+    }
+    return false;
 }
 }  // namespace melange::mirage::pose::logic

@@ -4,13 +4,20 @@
 // register(c8)`, flushed by cgGL into the bound ARB vertex program's local parameters, four registers per bone. For
 // a draw of a skinned program while a pose or copy is live, this module reads the 34-bone palette back
 // (glGetProgramLocalParameterfvARB), finds which worm it is (pose_logic.h Identify: the main bone's pivot against
-// each worm's feet), uploads the posed palette through the GL hub chain (so MirageShaders' GLSL mirror sees it when a
-// GLSL replacement draws the worm), draws, optionally draws again with the severed-head palette, and uploads the
-// game's palette back so cgGL's shadow state stays true. Draws only: the simulation, Wormsign and physics never see
-// a pose, so this cannot desync. With no pose live every draw goes straight through.
+// each worm's feet, with the centre height learned in game), uploads the posed palette through the GL hub chain (so
+// MirageShaders' GLSL mirror sees it when a GLSL replacement draws the worm), draws, optionally draws again with the
+// severed-head palette, and uploads the game's palette back so cgGL's shadow state stays true. Draws only: the
+// simulation, Wormsign and physics never see a pose, so this cannot desync. With no pose live every draw goes
+// straight through.
 //
-// Not covered: rigid attachments (hats, moustaches, the engine-held weapon) are separate unskinned draws and keep
-// the unposed position; give a posed tool an invisible held mesh and draw it with wum.draw.mesh.
+// The draw is trusted to be the Cg program last bound only while that program's ARB id is still bound and
+// GL_VERTEX_PROGRAM_ARB is enabled (glBindProgramARB / glEnable / glDisable are tracked through the hub): after
+// cgGLDisableProfile or a fixed-function draw nothing is read or patched.
+//
+// Rigid head attachments (hat, moustache, glasses) are separate unskinned draws (FFVertexMain*: world = v * model).
+// With hide.attachments, a draw whose `model` origin lies within 9 units of the posed worm's unposed head bones is
+// skipped ("hide", and always under a stump) or drawn with the head's pose delta applied to `model` ("follow"). The
+// engine-held weapon is not covered: give a posed tool an invisible held mesh and draw it with wum.draw.mesh.
 #include <windows.h>
 #include <GL/gl.h>
 
@@ -41,25 +48,37 @@ using DrawRange = void(WINAPI*)(GLenum, GLuint, GLuint, GLsizei, GLenum, const v
 using Ls4fv = void(WINAPI*)(GLenum, GLuint, GLsizei, const GLfloat*);
 using L4fv = void(WINAPI*)(GLenum, GLuint, const GLfloat*);
 using GetL = void(WINAPI*)(GLenum, GLuint, GLfloat*);
+using BindProgram = void(WINAPI*)(GLenum, GLuint);
+using Cap = void(WINAPI*)(GLenum);
 DrawElements n_drawElements;
 DrawArrays n_drawArrays;
 DrawRange n_drawRange;
 Ls4fv n_ls4fv;
 L4fv n_l4fv;
+BindProgram n_bindProgram;
+Cap n_enable, n_disable;
 GetL g_getLocal = nullptr;
 bool g_getTried = false;
 
 bool g_installed = false, g_log = false;
 
+// The ARB vertex program state as the game (and cgGL) set it. Each check is used only once its call was seen, so a
+// driver path that bypasses the hub degrades to the bind-only rule instead of turning poses off.
+GLuint g_arbBound = 0;
+bool g_vpEnabled = false, g_sawBind = false, g_sawEnable = false;
+
 struct Prog {
     bool skinned = false;
     int stage = 0;
     bool resolved = false;
-    int base = 8;
+    int base = 8;        // skinned: BlendMat's first local register
+    int modelBase = -1;  // unskinned: the `model` matrix's first local register, -1 when it has none
+    GLuint arbId = 0;    // the ARB program cgGL bound for it
 };
 std::unordered_map<void*, Prog> g_progs;
-Prog* g_vp = nullptr;      // the bound vertex program, when we know it
+Prog* g_vp = nullptr;      // the Cg vertex program last bound
 bool g_sawSkinned = false;
+uint32_t g_identified = 0;  // skinned draws of a posed / copied / tracked worm that were identified and handled
 
 struct Slot {
     const void* owner = nullptr;
@@ -70,9 +89,16 @@ struct Slot {
     lg::M4 head = lg::Identity();
     float bones[lg::kBones][3] = {};
     uint64_t bonesFrame = 0;
+    // Head attachments: the unposed head bone pivots of the last draw and the head group's pose delta.
+    float headPts[lg::kHeadBones][3] = {};
+    uint64_t headFrame = 0;
+    lg::M4 headDelta = lg::Identity();
 };
 Slot g_slots[16];
-int g_live = 0;  // slots with a pose or copy owner (cleared lazily on expiry)
+int g_live = 0;        // slots with a live pose or copy (recounted every frame)
+int g_attachLive = 0;  // live poses with an attachment rule
+uint64_t g_countFrame = ~0ull;
+lg::Centre g_centre;
 
 struct Worms {
     uint64_t frame = ~0ull;
@@ -86,12 +112,23 @@ bool PoseOn(const Slot& s) { return s.owner && Now() <= s.until; }
 bool CopyOn(const Slot& s) { return s.copyOwner && Now() <= s.copyUntil; }
 
 void Recount() {
-    g_live = 0;
+    g_live = g_attachLive = 0;
+    const bool match = sim::InMatch();
     for (Slot& s : g_slots) {
-        if (s.owner && Now() > s.until) s.owner = nullptr;
-        if (s.copyOwner && Now() > s.copyUntil) s.copyOwner = nullptr;
+        if (s.owner && (!match || Now() > s.until)) s.owner = nullptr;
+        if (s.copyOwner && (!match || Now() > s.copyUntil)) s.copyOwner = nullptr;
         g_live += (s.owner || s.copyOwner) ? 1 : 0;
+        g_attachLive += s.owner && s.spec.attach != lg::Attach::Keep ? 1 : 0;
     }
+}
+
+// Once per frame while anything is live: expired poses go, and every pose goes at match end, so a finished pose
+// stops the per-draw readback.
+void FrameTick() {
+    const uint64_t f = Now();
+    if (f == g_countFrame) return;
+    g_countFrame = f;
+    if (g_live) Recount();
 }
 
 void RefreshWorms() {
@@ -116,18 +153,23 @@ void Resolve(void* program, Prog& p) {
     p.resolved = true;
     const shadersrc::Cg& cg = shaders::CgApi();
     if (cg.ok && cg.GetNamedParameter && cg.GetParameterResourceIndex) {
-        void* param = cg.GetNamedParameter(program, "BlendMat[0]");
-        if (!param) param = cg.GetNamedParameter(program, "BlendMat");
-        if (param) {
+        if (p.skinned) {
+            void* param = cg.GetNamedParameter(program, "BlendMat[0]");
+            if (!param) param = cg.GetNamedParameter(program, "BlendMat");
+            if (param) {
+                const unsigned long idx = cg.GetParameterResourceIndex(param);
+                if (idx < 256) p.base = static_cast<int>(idx);
+            }
+        } else if (void* param = cg.GetNamedParameter(program, "model")) {
             const unsigned long idx = cg.GetParameterResourceIndex(param);
-            if (idx < 256) p.base = static_cast<int>(idx);
+            if (idx < 256) p.modelBase = static_cast<int>(idx);
         }
         cg.Drain();
     }
-    if (g_log) LOG_INFO("[pose] skinned program %p: BlendMat at program.local[%d]", program, p.base);
+    if (g_log && p.skinned) LOG_INFO("[pose] skinned program %p: BlendMat at program.local[%d]", program, p.base);
 }
 
-bool ReadPalette(int base, float* out, int first = 0, int count = kRegs) {
+bool ReadRegs(int base, float* out, int first, int count) {
     if (!g_getTried) {
         g_getTried = true;
         PROC f = wglGetProcAddress("glGetProgramLocalParameterfvARB");
@@ -140,34 +182,50 @@ bool ReadPalette(int base, float* out, int first = 0, int count = kRegs) {
     return true;
 }
 
-void Upload(int base, const float* v) {
+void Upload(int base, const float* v, int regs = kRegs) {
     if (n_ls4fv) {
-        n_ls4fv(kVertexProgramArb, static_cast<GLuint>(base), kRegs, v);
+        n_ls4fv(kVertexProgramArb, static_cast<GLuint>(base), regs, v);
         return;
     }
-    for (int k = 0; k < kRegs; ++k) n_l4fv(kVertexProgramArb, static_cast<GLuint>(base + k), v + k * 4);
+    for (int k = 0; k < regs; ++k) n_l4fv(kVertexProgramArb, static_cast<GLuint>(base + k), v + k * 4);
+}
+
+// The draw really runs the Cg vertex program last bound (see the header comment).
+bool VpCurrent() {
+    if (!g_vp) return false;
+    if (g_sawEnable && !g_vpEnabled) return false;
+    if (g_sawBind && (!g_vp->arbId || g_arbBound != g_vp->arbId)) return false;
+    return true;
 }
 
 template <class Draw>
-void Around(Draw draw) {
-    if (!g_live || !g_vp || !g_vp->skinned) return draw();
+void Skinned(Draw draw) {
     float pal[lg::kFloats], out[lg::kFloats];
     // The main bone (4 registers) says which worm this is; the rest of the palette is read only for a posed one.
-    if (!ReadPalette(g_vp->base, pal, 0, 4)) return draw();
+    if (!ReadRegs(g_vp->base, pal, 0, 4)) return draw();
     RefreshWorms();
-    const int i = lg::Identify(pal, g_worms.feet, g_worms.n, 26.f);
+    float main0[3];
+    lg::PivotWorld(pal, 0, main0);
+    g_centre.Sample(main0, g_worms.feet, g_worms.n);
+    const int i = lg::Identify(pal, g_worms.feet, g_worms.n, 26.f, g_centre.y);
     if (i < 0) return draw();
     const int slot = g_worms.slot[i];
     Slot& s = g_slots[slot];
     const bool pose = PoseOn(s), copy = CopyOn(s);
     if (!pose && !copy) return draw();
-    ReadPalette(g_vp->base, pal, 4, kRegs - 4);
-    if (pose) {
-        lg::Compose(pal, s.spec, out);
+    ReadRegs(g_vp->base, pal, 4, kRegs - 4);
+    ++g_identified;
+    for (int b = 0; b < lg::kHeadBones; ++b) lg::PivotWorld(pal, lg::kHeadFirst + b, s.headPts[b]);
+    s.headFrame = Now();
+    bool uploaded = false;
+    if (pose && !s.spec.Empty()) {
+        lg::Compose(pal, s.spec, out, &s.headDelta);
         Upload(g_vp->base, out);
+        uploaded = true;
         draw();
         for (int b = 0; b < lg::kBones; ++b) lg::PivotWorld(out, b, s.bones[b]);
     } else {
+        s.headDelta = lg::Identity();
         draw();
         for (int b = 0; b < lg::kBones; ++b) lg::PivotWorld(pal, b, s.bones[b]);
     }
@@ -175,9 +233,40 @@ void Around(Draw draw) {
     if (copy) {
         lg::ComposeCopy(pal, s.head, out);
         Upload(g_vp->base, out);
+        uploaded = true;
         draw();
     }
-    Upload(g_vp->base, pal);
+    if (uploaded) Upload(g_vp->base, pal);
+}
+
+// An unskinned draw while a pose with an attachment rule is live: is it a head attachment of that worm?
+template <class Draw>
+void Attachment(Draw draw) {
+    float m[16];
+    if (!ReadRegs(g_vp->modelBase, m, 0, 4)) return draw();
+    const float t[3] = {m[12], m[13], m[14]};
+    for (Slot& s : g_slots) {
+        if (!PoseOn(s) || s.spec.attach == lg::Attach::Keep || !s.headFrame || Now() > s.headFrame + 2) continue;
+        if (!lg::NearHead(t, s.headPts)) continue;
+        if (s.spec.attach == lg::Attach::Hide || s.spec.stump) return;  // not drawn
+        lg::M4 model;
+        std::memcpy(model.m, m, sizeof m);
+        const lg::M4 moved = lg::Mul(model, s.headDelta);
+        Upload(g_vp->modelBase, moved.m, 4);
+        draw();
+        Upload(g_vp->modelBase, m, 4);
+        return;
+    }
+    draw();
+}
+
+template <class Draw>
+void Around(Draw draw) {
+    FrameTick();
+    if (!g_live || !VpCurrent()) return draw();
+    if (g_vp->skinned) return Skinned(draw);
+    if (g_attachLive && g_vp->modelBase >= 0) return Attachment(draw);
+    draw();
 }
 
 void WINAPI HkDrawElements(GLenum m, GLsizei c, GLenum t, const void* i) {
@@ -192,6 +281,25 @@ void WINAPI HkDrawRange(GLenum m, GLuint s, GLuint e, GLsizei c, GLenum t, const
 // Pass-through wrappers so our uploads enter the chain in front of MirageShaders' mirror.
 void WINAPI HkLs4fv(GLenum t, GLuint i, GLsizei n, const GLfloat* v) { n_ls4fv(t, i, n, v); }
 void WINAPI HkL4fv(GLenum t, GLuint i, const GLfloat* v) { n_l4fv(t, i, v); }
+// The ARB vertex program state.
+void WINAPI HkBindProgram(GLenum target, GLuint id) {
+    n_bindProgram(target, id);
+    if (target != kVertexProgramArb) return;
+    g_arbBound = id;
+    g_sawBind = true;
+}
+void WINAPI HkEnable(GLenum cap) {
+    n_enable(cap);
+    if (cap != kVertexProgramArb) return;
+    g_vpEnabled = true;
+    g_sawEnable = true;
+}
+void WINAPI HkDisable(GLenum cap) {
+    n_disable(cap);
+    if (cap != kVertexProgramArb) return;
+    g_vpEnabled = false;
+    g_sawEnable = true;
+}
 
 template <class T>
 bool Chain(const char* name, T hook, T* next) {
@@ -202,7 +310,8 @@ bool ValidSlot(int slot) { return slot >= 0 && slot < 16; }
 int Frames(int frames) { return frames <= 0 ? 3 : (frames > kMaxFrames ? kMaxFrames : frames); }
 
 bool VerbTest(std::string_view args, void*) {
-    // pose.test <slot> prone|stump|mount|copy|off : a 5 s pose for screenshots, owned by the console.
+    // pose.test <slot> prone|stump|mount|copy|off : a 250-frame pose (about 4 s at 60 fps) for screenshots, owned by
+    // the console.
     static const int kOwner = 0;
     int slot = -1;
     char what[16] = "";
@@ -228,11 +337,14 @@ bool VerbTest(std::string_view args, void*) {
             }
         SetCopy(&kOwner, slot, h, 250);
         s.stump = true;
+        s.attach = lg::Attach::Hide;
     } else if (!strcmp(what, "prone")) {
         s.root.on = true;
         s.root.rot[0] = -90;
+        s.attach = lg::Attach::Follow;
     } else if (!strcmp(what, "stump")) {
         s.stump = true;
+        s.attach = lg::Attach::Hide;
     } else if (!strcmp(what, "mount")) {
         s.root.on = true;
         s.root.rot[0] = 35;
@@ -241,9 +353,11 @@ bool VerbTest(std::string_view args, void*) {
         s.group[lg::kRightHand].rot[0] = -60;
         s.group[lg::kLeftHand].on = true;
         s.group[lg::kLeftHand].rot[0] = -60;
+        s.attach = lg::Attach::Follow;
     }
     const Result r = Set(&kOwner, slot, s, 250);
-    LOG_INFO("[pose] pose.test %d %s: %s (status: %s)", slot, what, r == Result::Ok ? "ok" : "refused", Status());
+    LOG_INFO("[pose] pose.test %d %s: %s (status: %s, centre %.2f from %d sample(s))", slot, what,
+             r == Result::Ok ? "ok" : "refused", Status(), g_centre.y, g_centre.samples);
     return r == Result::Ok;
 }
 }  // namespace
@@ -263,10 +377,9 @@ void OnBind(void* program) {
     if (it == g_progs.end()) return;
     if (it->second.stage != 0) return;
     g_vp = &it->second;
-    if (g_vp->skinned) {
-        Resolve(program, *g_vp);
-        g_sawSkinned = true;
-    }
+    g_vp->arbId = g_arbBound;  // cgGL's glBindProgramARB went through HkBindProgram just now (or was already bound)
+    Resolve(program, *g_vp);
+    if (g_vp->skinned) g_sawSkinned = true;
 }
 
 Result Set(const void* owner, int slot, const lg::Spec& s, int frames) {
@@ -323,10 +436,13 @@ bool Bones(int slot, float out[lg::kBones][3]) {
 
 const char* Status() {
     if (!g_installed) return "disabled";
-    if (!g_sawSkinned) return "no skinned worm drawn yet";
     if (g_getTried && !g_getLocal) return "unsupported";
+    if (!g_sawSkinned) return "no skinned worm drawn yet";
+    if (!g_identified) return "untested";
     return "ok";
 }
+
+uint32_t IdentifiedDraws() { return g_identified; }
 
 namespace {
 class MiragePose final : public melange::Module {
@@ -346,6 +462,10 @@ public:
                         Chain("glDrawRangeElements", &HkDrawRange, &n_drawRange) &&
                         Chain("glProgramLocalParameter4fvARB", &HkL4fv, &n_l4fv);
         Chain("glProgramLocalParameters4fvEXT", &HkLs4fv, &n_ls4fv);  // optional: one call per palette when present
+        // Optional: without them a draw is trusted to be the last bound Cg program (the bind-only rule).
+        const bool state = Chain("glBindProgramARB", &HkBindProgram, &n_bindProgram) &&
+                           Chain("glEnable", &HkEnable, &n_enable) && Chain("glDisable", &HkDisable, &n_disable);
+        if (!state) LOG_WARN("[pose] the ARB program state is not tracked: poses trust the last Cg bind");
         if (!ok) {
             LOG_WARN("[pose] GL draw hooks incomplete: wum.render.wormPose answers \"unavailable\"");
             return false;

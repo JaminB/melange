@@ -485,7 +485,7 @@ wum.render.wormPose(slot, {
   tail      = {...},
   leftHand  = {target = {x, y, z}, rot = {...}},   -- the wrist (and the hand with it) carried to a world point
   rightHand = {...},
-  hide      = {head = "stump"},                    -- flatten the head into the neck
+  hide      = {head = "stump", attachments = "hide"},  -- flatten the head; hide (or "follow") hats and the like
 })
 ```
 
@@ -498,32 +498,47 @@ wum.render.wormPose(slot, {
   `root = {rot = {-90, 0, 0}}` lays a worm on its back about its middle.
 - `hide = {head = "stump"}` flattens the head (the upper half of the worm, its eyes and mouth) onto the neck plane
   across the worm's own up direction: a flat-topped stump.
+- `hide.attachments`: the head's rigid attachments (hat, moustache, glasses: separate unskinned draws). `true` or
+  `"hide"` skips their draws; `"follow"` draws them moved with the posed head (hidden anyway under a stump). An
+  attachment is a draw whose origin lies within 9 world units of the worm's unposed head bones. Without it they keep
+  their unposed place. The weapon the engine puts in the worm's hand is not covered.
+- A spec with no edits, no stump and no attachment rule (`{}` or `{frames = n}`) changes nothing drawn and only tracks
+  the bones for `wormBones`.
 - Returns `true`; `false, "busy"` when another mod poses that slot (one mod per slot); `false, "unavailable"` outside
   a match or without MiragePose. `wum.render.wormPose(slot, nil)` clears the mod's own pose. A pose also ends when the
-  mod unloads. Bad fields raise.
+  mod unloads or the match ends. Bad fields raise (a non-table `hide`, a `hide.head` other than `"stump"`, an unknown
+  `hide.attachments`, a non-table edit, `frames` out of range).
 
 `wum.render.wormCopy(slot, {pos = {x, y, z}[, rot = {pitch, yaw, roll}][, frames = n]})` draws the worm a second time
 as its severed head: the real head mesh with its texture, skin and team colours, the neck carried to `pos` and turned
 by `rot`, the rest of the body closed over the cut. Pair it with `hide = {head = "stump"}` on the worm itself. Same
-returns and lifetime as `wormPose`; `nil` clears it.
+returns and lifetime as `wormPose`; `nil` clears it. The copy is drawn only while the engine draws the worm: when a
+killed worm unspawns at the end of its throes, the head copy goes with it (use `worm:kill{throes = ...}`, up to 10 s,
+to keep it, and a client mesh for gore that must stay longer).
 
 `wum.render.wormBones(slot)` returns the world positions of the worm's 34 bone pivots as last drawn (posed), keyed by
 bone name (`main`, `tail`, `tail2`, `tail3`, `head`, the lip, mouth, eye and brow bones, `shoulder_left`,
 `wrist_left`, the left finger bones, `shoulder_right`, `wrist_right`, the right finger bones), each `{x, y, z}`; `nil`
-when the worm was not drawn in the last two frames while posed or copied. Use it to place a held mesh or gore on a
-posed worm.
+when the worm was not drawn in the last two frames while posed, tracked or copied. For the unposed bones (hand targets
+for a dig), track the worm with an empty pose: `wum.render.wormPose(slot, {frames = 5})`, then read `wormBones` from
+the next frame. Use it to place a held mesh or gore on a posed worm.
 
-`wum.render.wormPoseStatus()` returns `"ok"`, `"no skinned worm drawn yet"`, `"unsupported"` (the driver lacks the
-call that reads the palette back) or `"disabled"` (`[MiragePose] Enabled=0`, or no Cg layer): fall back to
-client-drawn meshes when it is not `"ok"`.
+`wum.render.wormPoseStatus()` returns the status and the number of draws handled so far. The status is `"ok"` once a
+draw of a posed, tracked or copied worm has been identified from its read-back palette and handled (so the readback,
+the register base and the identification all work), `"untested"` while skinned worms were drawn but no posed one was
+identified yet, `"no skinned worm drawn yet"`, `"unsupported"` (the driver lacks the call that reads the palette back)
+or `"disabled"` (`[MiragePose] Enabled=0`, or no Cg layer). Set the pose first and check a few frames later: fall back
+to client-drawn meshes when it is still not `"ok"`.
 
 How it works: worms are skinned on the GPU from a 34-bone palette (`BlendMat` in `CG/FixedFunction.cg`). While a pose
 or copy is live, MiragePose reads the palette of every skinned draw, finds which worm it is (the main bone's position
-against each worm's feet), draws it with the posed palette (and again with the head-copy palette) and puts the game's
-palette back. Rigid attachments (hats, moustaches, glasses and the weapon the engine puts in the worm's hand) are
-separate draws and keep their unposed place: give a posed tool an invisible held mesh and draw it yourself with
-`wum.draw.mesh` at the `wormBones` wrists. `pose.test <slot> prone|stump|mount|copy|off` (Automation) poses a worm
-for 5 s for screenshots; `[MiragePose] Log=1` logs the palette registers it found.
+against each worm's feet, at a centre height it measures on draws where only one worm is near), draws it with the posed
+palette (and again with the head-copy palette) and puts the game's palette back. A draw is trusted only while the Cg
+skinned program's ARB program is still bound and enabled. Nothing is read once every pose has expired or the match
+ended. The weapon the engine puts in the worm's hand is a separate draw that keeps its unposed place: give a posed tool
+an invisible held mesh and draw it yourself with `wum.draw.mesh` at the `wormBones` wrists.
+`pose.test <slot> prone|stump|mount|copy|off` (Automation) poses a worm for 250 frames (about 4 s at 60 fps) for
+screenshots; `[MiragePose] Log=1` logs the palette registers it found.
 
 ## `wum.postfx`
 

@@ -1369,8 +1369,38 @@ int PoseResult(lua_State* L, mirage::pose::Result r) {
     }
 }
 
-// wum.render.wormPose(slot, {frames=, root=, head=, tail=, leftHand=, rightHand=, hide={head="stump"}})
-// wum.render.wormPose(slot, nil) clears this mod's pose of the slot.
+// hide = {head = "stump", attachments = true | "hide" | "follow"}
+void HideField(lua_State* L, int t, mirage::pose::logic::Spec* spec) {
+    namespace lg = mirage::pose::logic;
+    const int ht = lua_getfield(L, t, "hide");
+    if (ht == LUA_TNIL) {
+        lua_pop(L, 1);
+        return;
+    }
+    if (ht != LUA_TTABLE) luaL_error(L, "wormPose: hide must be a table {head = \"stump\", attachments = ...}");
+    const int h = lua_absindex(L, -1);
+    const int head = lua_getfield(L, h, "head");
+    if (head != LUA_TNIL) {
+        if (head != LUA_TSTRING || strcmp(lua_tostring(L, -1), "stump") != 0)
+            luaL_error(L, "wormPose: hide.head must be \"stump\"");
+        spec->stump = true;
+    }
+    lua_pop(L, 1);
+    const int at = lua_getfield(L, h, "attachments");
+    if (at == LUA_TBOOLEAN) {
+        spec->attach = lua_toboolean(L, -1) ? lg::Attach::Hide : lg::Attach::Keep;
+    } else if (at == LUA_TSTRING && strcmp(lua_tostring(L, -1), "hide") == 0) {
+        spec->attach = lg::Attach::Hide;
+    } else if (at == LUA_TSTRING && strcmp(lua_tostring(L, -1), "follow") == 0) {
+        spec->attach = lg::Attach::Follow;
+    } else if (at != LUA_TNIL) {
+        luaL_error(L, "wormPose: hide.attachments must be true, false, \"hide\" or \"follow\"");
+    }
+    lua_pop(L, 2);
+}
+
+// wum.render.wormPose(slot, {frames=, root=, head=, tail=, leftHand=, rightHand=, hide={head=, attachments=}})
+// wum.render.wormPose(slot, {}) or {frames = n} only tracks the bones; wum.render.wormPose(slot, nil) clears.
 int WormPose(lua_State* L) {
     ModRec* m = Current();
     Gen* g = CurrentGen();
@@ -1385,14 +1415,7 @@ int WormPose(lua_State* L) {
     lg::Spec spec;
     EditField(L, 2, "root", &spec.root);
     for (int i = 0; i < lg::kGroups; ++i) EditField(L, 2, lg::kGroupNames[i], &spec.group[i]);
-    if (lua_getfield(L, 2, "hide") == LUA_TTABLE) {
-        if (lua_getfield(L, -1, "head") == LUA_TSTRING) {
-            if (strcmp(lua_tostring(L, -1), "stump") != 0) return luaL_argerror(L, 2, "hide.head must be \"stump\"");
-            spec.stump = true;
-        }
-        lua_pop(L, 1);
-    }
-    lua_pop(L, 1);
+    HideField(L, 2, &spec);
     const int frames = PoseFrames(L, 2);
     const auto r = mirage::pose::Set(m, slot, spec, frames);
     if (r == mirage::pose::Result::Ok) QueuePoseCleanup(m, g);
@@ -1438,10 +1461,12 @@ int WormBones(lua_State* L) {
     return 1;
 }
 
-// wum.render.wormPoseStatus() -> "ok" | "no skinned worm drawn yet" | "unsupported" | "disabled"
+// wum.render.wormPoseStatus() -> "ok" | "untested" | "no skinned worm drawn yet" | "unsupported" | "disabled",
+// identifiedDraws
 int WormPoseStatus(lua_State* L) {
     lua_pushstring(L, mirage::pose::Status());
-    return 1;
+    lua_pushinteger(L, static_cast<lua_Integer>(mirage::pose::IdentifiedDraws()));
+    return 2;
 }
 
 void Shared(lua_State* L, int wum) {

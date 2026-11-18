@@ -132,6 +132,46 @@ int main() {
         const float far[1][3] = {{400, 0, 0}};
         Expect(lg::Identify(pal, far, 1, 26.f) == -1, "no worm within reach: none");
     }
+    {  // the learned centre height: unambiguous draws only
+        lg::Centre c;
+        const float feet[2][3] = {{0, 0, 0}, {200, 0, 0}};
+        const float p[3] = {1, 23, -1};
+        for (int k = 0; k < 40; ++k) c.Sample(p, feet, 2);
+        Expect(std::fabs(c.y - 23.f) < 0.05f && c.samples == 40, "the centre converges on the measured height");
+        const float close[2][3] = {{0, 0, 0}, {20, 0, 0}};
+        lg::Centre c2;
+        Expect(!c2.Sample(p, close, 2) && c2.samples == 0 && c2.y == lg::kCentreY, "a worm 20 units away: no sample");
+        const float high[3] = {0, 90, 0};
+        Expect(!c2.Sample(high, feet, 2), "a height outside 0..40 is no sample");
+        // The mount: two worms 18 apart, the main pivot really 23 over the feet. The guess (19) would still pick
+        // the right one here; a wrong guess of 40 would not, the learned value does.
+        float pal2[lg::kFloats];
+        const float at2[3] = {18, 23 + 0.827f, 0.f - 0.329f};
+        Palette(pal2, at2, 0);
+        const float pair[2][3] = {{0, 0, 0}, {18, 0, 0}};
+        Expect(lg::Identify(pal2, pair, 2, 26.f, c.y) == 1, "identification with the learned centre");
+    }
+    {  // head attachments
+        float head[lg::kHeadBones][3];
+        for (int b = 0; b < lg::kHeadBones; ++b) lg::PivotWorld(pal, lg::kHeadFirst + b, head[b]);
+        const float hat[3] = {at[0] + 1.f, at[1] + 22.f, at[2] + 4.f};
+        const float other[3] = {at[0] + 25.f, at[1] + 20.f, at[2]};
+        Expect(lg::NearHead(hat, head) && !lg::NearHead(other, head), "a hat on the head matches, another worm's does not");
+        lg::Spec s;
+        s.root.on = true;
+        s.root.rot[0] = -90;
+        lg::M4 d;
+        lg::Compose(pal, s, out, &d);
+        float moved[3], expect[3];
+        lg::Point(d, hat, moved);
+        const float bind[3] = {hat[0] - at[0], hat[1] - at[1], hat[2] - at[2]};
+        World(out, 4, bind, expect);
+        Expect(Near(moved, expect, 1e-2f), "a following attachment moves with the posed head: " + V(moved) + " " + V(expect));
+        lg::Spec empty;
+        Expect(empty.Empty() && !s.Empty(), "an empty spec only tracks");
+        empty.attach = lg::Attach::Hide;
+        Expect(!empty.Empty(), "an attachment rule is not empty");
+    }
     {  // groups and names
         Expect(lg::GroupOf(0) == -1 && lg::GroupOf(4) == lg::kHead && lg::GroupOf(15) == lg::kHead &&
                    lg::GroupOf(2) == lg::kTail && lg::GroupOf(17) == lg::kLeftHand && lg::GroupOf(33) == lg::kRightHand,

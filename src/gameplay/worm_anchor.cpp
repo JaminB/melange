@@ -24,7 +24,9 @@
 // 0x5aa080 then runs the death explosion 0x5a9400 and the gravestone 0x5a9310 (both thiscall(entity; container),
 // ret 4) and unspawns the worm. Three hooks, enabled only in a match that has posted a kill, apply the kill's options:
 // after TimeToDie the timer becomes throes * 20 ms, and the explosion and the grave are skipped when asked. The
-// options are sim state (set by sim scripts at the same tick everywhere) and hashed as "melange.wormkill".
+// TimeToDie hook also confirms the kill (simworms::KillDue): the explosion and grave hooks act only on a confirmed
+// kill, and a posted kill never confirmed is dropped after kKillConfirmTicks. The options and stages are sim state
+// (set by sim scripts and the engine at the same tick everywhere) and hashed as "melange.wormkill".
 // Notes: docs/gravespade-re-worm.md.
 //
 // The input handler also runs an optional filter (simworms::SetInputFilter) before the anchor's own block: the melee
@@ -287,7 +289,7 @@ void __fastcall HkTimeToDie(uintptr_t e, void*) {
     g_hTimeToDie.thiscall<void>(e);
     const int slot = SlotOfEntity(e);
     sw::KillOpts o;
-    if (slot < 0 || !sw::KillPending(slot, &o)) return;
+    if (slot < 0 || !sw::KillDue(slot, &o)) return;
     const int32_t ms = static_cast<int32_t>(o.throes * melange::wormsign::kTickMs);
     Poke(e + 0x128, &ms, 4);
     LOG_INFO("[worms] slot %d: scripted death, throes %d ms, explode %d, grave %d, tick %u", slot, ms, o.explode ? 1 : 0,
@@ -297,14 +299,14 @@ void __fastcall HkTimeToDie(uintptr_t e, void*) {
 void __fastcall HkDeathExplosion(uintptr_t e, void*, uintptr_t container) {
     const int slot = SlotOfEntity(e);
     sw::KillOpts o;
-    if (slot >= 0 && sw::KillPending(slot, &o) && !o.explode) return;
+    if (slot >= 0 && sw::KillDying(slot, &o) && !o.explode) return;
     g_hDeathExpl.thiscall<void>(e, container);
 }
 
 void __fastcall HkGravestone(uintptr_t e, void*, uintptr_t container) {
     const int slot = SlotOfEntity(e);
     sw::KillOpts o;
-    if (slot >= 0 && sw::KillPending(slot, &o) && !o.grave) return;
+    if (slot >= 0 && sw::KillDying(slot, &o) && !o.grave) return;
     g_hGrave.thiscall<void>(e, container);
 }
 

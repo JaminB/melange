@@ -7,7 +7,9 @@
 #include <cstdio>
 #include <cstring>
 
+#include "core/log.h"
 #include "lua/sim/bridge_internal.h"
+#include "lua/sim/sim_melee.h"
 #include "melange/sim.h"
 
 namespace melange::simworms {
@@ -29,7 +31,8 @@ struct AnchorState {
 };
 AnchorState g_anchors[kMaxWorms];
 
-// Scripted kills: 0 none, 1 posted (pending), 2 completed (sim.wormKilled raised).
+// Scripted kills: 0 none, 1 posted (Worm.KillNow sent), 2 dying (the engine's TimeToDie ran for it), 3 completed
+// (sim.wormKilled raised). A posted kill the engine never confirms within kKillConfirmTicks is dropped (stage 0).
 struct KillState {
     uint8_t stage = 0;
     KillOpts opts;
@@ -239,7 +242,8 @@ int __cdecl LKill(l5::State* L) {
         const bool badE = te != l5::kTNil && te != l5::kTBoolean, badG = tg != l5::kTNil && tg != l5::kTBoolean;
         const bool badT = tt != l5::kTNil && (tt != l5::kTNumber || std::floor(th) != th || th < 1 || th > kMaxThroes);
         if (badE || badG || badT) {
-            snprintf(g_err, sizeof g_err, "worm:kill(opts): explode and grave are booleans, throes an integer 1..150");
+            snprintf(g_err, sizeof g_err, "worm:kill(opts): explode and grave are booleans, throes an integer 1..%u",
+                     static_cast<unsigned>(kMaxThroes));
             return Raise(L);
         }
         if (tt == l5::kTNumber) o.throes = static_cast<uint32_t>(th);
@@ -393,16 +397,38 @@ void ResetMatch() {
     for (auto& k : g_kills) k = KillState{};
 }
 
+// sin and cos from IEEE basic operations only (+, -, *, floor), so the result does not depend on the C runtime's
+// transcendental code paths (CPU-dispatched in the UCRT): bit-identical on every peer that runs this build.
+double DetSin(double x) {
+    constexpr double kPi = 3.14159265358979323846, kTwoPi = 2 * kPi, kHalfPi = kPi / 2;
+    double r = x - std::floor(x / kTwoPi + 0.5) * kTwoPi;  // [-pi, pi]
+    if (r > kHalfPi) r = kPi - r;
+    else if (r < -kHalfPi) r = -kPi - r;
+    const double r2 = r * r;
+    // Taylor to r^15: the error is below 3e-12 on [-pi/2, pi/2], far under float precision.
+    double p = 1.0 / 1307674368000.0;
+    p = p * -r2 + 1.0 / 6227020800.0;
+    p = p * -r2 + 1.0 / 39916800.0;
+    p = p * -r2 + 1.0 / 362880.0;
+    p = p * -r2 + 1.0 / 5040.0;
+    p = p * -r2 + 1.0 / 120.0;
+    p = p * -r2 + 1.0 / 6.0;
+    return r - r * r2 * p;
+}
+double DetCos(double x) { return DetSin(x + 3.14159265358979323846 / 2); }
+
 void AimDir(float pitch, float yaw, float out[3]) {
-    const float cp = std::cos(pitch);
-    out[0] = std::sin(yaw) * cp;
-    out[1] = std::sin(pitch);
-    out[2] = std::cos(yaw) * cp;
+    const double cp = DetCos(pitch);
+    out[0] = static_cast<float>(DetSin(yaw) * cp);
+    out[1] = static_cast<float>(DetSin(pitch));
+    out[2] = static_cast<float>(DetCos(yaw) * cp);
 }
 
 bool Kill(int slot, const KillOpts& o, const char** why) {
     if (!ValidSlot(slot)) return *why = "no worm", false;
     if (!g_backend) return *why = "unavailable", false;
+    // Inside the engine's strike loop the death would run under the hit records it is iterating: next tick.
+    if (simmelee::InHit()) return *why = "in hit", false;
     WormInfo w;
     if (!g_backend->Read(slot, &w)) return *why = "no worm", false;
     if (w.state == kDrownFloat) return *why = "drowning", false;
@@ -422,14 +448,26 @@ bool Kill(int slot, const KillOpts& o, const char** why) {
 }
 
 bool KillPending(int slot, KillOpts* out) {
-    if (!ValidSlot(slot) || g_kills[slot].stage != 1) return false;
+    if (!ValidSlot(slot) || (g_kills[slot].stage != 1 && g_kills[slot].stage != 2)) return false;
+    if (out) *out = g_kills[slot].opts;
+    return true;
+}
+
+bool KillDue(int slot, KillOpts* out) {
+    if (!KillPending(slot, out)) return false;
+    g_kills[slot].stage = 2;
+    return true;
+}
+
+bool KillDying(int slot, KillOpts* out) {
+    if (!ValidSlot(slot) || g_kills[slot].stage != 2) return false;
     if (out) *out = g_kills[slot].opts;
     return true;
 }
 
 bool AnyKillPending() {
     for (const auto& k : g_kills)
-        if (k.stage == 1) return true;
+        if (k.stage == 1 || k.stage == 2) return true;
     return false;
 }
 
@@ -440,18 +478,30 @@ void SetKillObserver(KillFn fn, void* user) {
 
 int PollKills() {
     int pending = 0;
+    const uint32_t now = sim::Tick();
     for (int i = 0; i < kMaxWorms; ++i) {
         KillState& k = g_kills[i];
-        if (k.stage != 1) continue;
+        if (k.stage != 1 && k.stage != 2) continue;
         WormInfo w{};
-        const bool there = g_backend && g_backend->Read(i, &w);
-        if (there && w.active) {
+        const bool there = g_backend && g_backend->Read(i, &w) && w.active;
+        if (k.stage == 1) {
+            // Posted but the engine never ran TimeToDie for it (the message was dropped, or the worm left another
+            // way): forget it, so a later vanilla death is not mistaken for this one.
+            if (!there || now - k.tick > kKillConfirmTicks) {
+                LOG_WARN("[worms] slot %d: the scripted kill of tick %u was not confirmed by the engine; dropped", i, k.tick);
+                k = KillState{};
+                continue;
+            }
             ++pending;
             continue;
         }
-        k.stage = 2;
+        if (there) {
+            ++pending;
+            continue;
+        }
+        k.stage = 3;
         if (g_killObserver) g_killObserver(i, false, g_killUser);
-        simbridge::Dispatch("sim.wormKilled", {static_cast<float>(i), static_cast<float>(sim::Tick())});
+        simbridge::Dispatch("sim.wormKilled", {static_cast<float>(i), static_cast<float>(now)});
     }
     return pending;
 }

@@ -380,6 +380,7 @@ bool Bones(int slot, float out[logic::kBones][3]) {
     return true;
 }
 const char* Status() { return "ok"; }
+uint32_t IdentifiedDraws() { return 12; }
 }  // namespace mirage::pose
 namespace gltrace {
 bool GpuTimerSupported() { return false; }
@@ -1468,9 +1469,16 @@ void TestWormPose() {
     Expect(mp::g_poseOwner[3] && mp::g_poseFrames == 7 && mp::g_spec.root.on && mp::g_spec.root.rot[0] == -90 &&
                mp::g_spec.root.move[1] == 2 && mp::g_spec.group[mp::logic::kRightHand].hasTarget &&
                mp::g_spec.group[mp::logic::kRightHand].target[2] == 3 && mp::g_spec.group[mp::logic::kHead].rot[0] == 10 &&
-               mp::g_spec.stump && !mp::g_spec.group[mp::logic::kTail].on,
+               mp::g_spec.stump && !mp::g_spec.group[mp::logic::kTail].on && mp::g_spec.attach == mp::logic::Attach::Keep,
            "the spec reaches MiragePose");
     ExpectEq(Eval("pose2", "return wum.render.wormPose(3, {})"), "false	busy", "another mod's pose is busy");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(5, {frames = 9})"), "true", "a pose with no edits (track only)");
+    Expect(mp::g_spec.Empty() && mp::g_poseFrames == 9, "a track-only spec is empty");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(5, {hide = {attachments = 'follow'}})"), "true", "attachments follow");
+    Expect(mp::g_spec.attach == mp::logic::Attach::Follow && !mp::g_spec.Empty(), "hide.attachments = follow reaches MiragePose");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(5, {hide = {head = 'stump', attachments = true}})"), "true", "hidden");
+    Expect(mp::g_spec.attach == mp::logic::Attach::Hide && mp::g_spec.stump, "hide.attachments = true hides");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(5, nil)"), "true", "cleared");
     ExpectEq(Eval("pose2", "return wum.render.wormPose(3, nil)"), "false", "another mod cannot clear it");
     ExpectEq(Eval("pose", "return wum.render.wormPose(3, nil)"), "true", "the owner clears it");
     ExpectEq(Eval("pose", "return wum.render.wormCopy(4, {pos = {10, 20, 30}, rot = {0, 90, 0}, frames = 5})"), "true",
@@ -1479,10 +1487,12 @@ void TestWormPose() {
            "the copy's transform carries the neck to pos");
     ExpectEq(Eval("pose", "local b = wum.render.wormBones(2) return b.wrist_right.x, b.main.y, wum.render.wormBones(1)"),
              "26	1	nil", "wormBones names the bones");
-    ExpectEq(Eval("pose", "return wum.render.wormPoseStatus()"), "ok", "status");
+    ExpectEq(Eval("pose", "return wum.render.wormPoseStatus()"), "ok	12", "status and the identified draw count");
     const char* bad[] = {"wum.render.wormPose(16, {})", "wum.render.wormPose(1.5, {})", "wum.render.wormPose(1, 5)",
                          "wum.render.wormPose(1, {frames = 0})", "wum.render.wormPose(1, {root = 5})",
-                         "wum.render.wormPose(1, {hide = {head = 'gone'}})", "wum.render.wormCopy(1, {})"};
+                         "wum.render.wormPose(1, {hide = {head = 'gone'}})", "wum.render.wormPose(1, {hide = {head = 5}})",
+                         "wum.render.wormPose(1, {hide = 'stump'})", "wum.render.wormPose(1, {hide = {attachments = 'x'}})",
+                         "wum.render.wormCopy(1, {})"};
     for (const char* code : bad) Expect(Eval("pose", code).rfind("ERR:", 0) == 0, std::string("raises: ") + code);
     sandbox::UnloadMod("pose");
     Expect(mp::g_poseOwner[3] == nullptr && mp::g_copySlot == -1, "unloading the mod clears its poses and copies");

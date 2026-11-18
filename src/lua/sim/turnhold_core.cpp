@@ -10,6 +10,7 @@
 #include "core/log.h"
 #include "lua/sim/bridge_internal.h"
 #include "lua/sim/sim_internal.h"
+#include "lua/sim/sim_melee.h"
 #include "melange/sim.h"
 
 namespace melange::turnhold {
@@ -272,6 +273,8 @@ int __cdecl LHoldTurn(l5::State* L) {
     Sync();
     if (!g.L || L != g.L) return NilReason(L, "not in a match");
     if (l5::RunState() != 1) return NilReason(L, "halted");
+    // A wum.sim.melee "hit" handler runs inside the engine strike loop: hold from the next tick instead.
+    if (simmelee::InHit()) return NilReason(L, "in hit");
     Init();  // the match observer and tick hook exist only once a hold is actually asked for in a running match
     if (const char* why = InstallWrapper(L)) return NilReason(L, why);
     const char* mod = simbridge::CurrentMod();

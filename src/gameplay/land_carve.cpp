@@ -148,13 +148,9 @@ public:
     bool RequiresKnownBuild() const override { return true; }
     int Order() const override { return 55; }
     bool Install() override {
+        // The budget is the compile-time default (sim_land.h): an ini value would let peers carve differently.
         sl::Limits lim;
-        lim.perTick = Int("CarvesPerTick", 4);
-        lim.perTurn = Int("CarvesPerTurn", 900);
         lim.log = Bool("Log", false);
-        if (lim.perTick < 1) lim.perTick = 1;
-        if (lim.perTick > 16) lim.perTick = 16;
-        if (lim.perTurn < 1) lim.perTurn = 1;
         sl::SetLimits(lim);
         if (!melange::gamestate::Available() || !Check()) {
             LOG_WARN("[land] layout differs from build #1077: wum.sim.carve answers \"unavailable\"");
@@ -166,7 +162,8 @@ public:
         if (!sl::AddSimFunctions()) LOG_WARN("[land] could not add wum.sim.carve/carveLine");
         if (melange::lua50::Check() && melange::lua50::Track()) g_context = melange::lua50::OnContext(&OnContext, nullptr);
         g_contrib = melange::wormsign::AddContributor("melange.land", &Contrib, nullptr);
-        LOG_INFO("[land] installed: wum.sim.carve (%d a tick, %d a turn)%s", lim.perTick, lim.perTurn, g_ready ? "" : " (inert)");
+        LOG_INFO("[land] installed: wum.sim.carve (%d call(s) a tick, %d sphere(s) a turn)%s", lim.perTick, lim.perTurn,
+                 g_ready ? "" : " (inert)");
         return true;
     }
     void Uninstall() override {

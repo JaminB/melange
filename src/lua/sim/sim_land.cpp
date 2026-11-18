@@ -9,6 +9,7 @@
 #include "core/log.h"
 #include "lua/sim/bridge_internal.h"
 #include "lua/sim/sim_internal.h"
+#include "lua/sim/sim_melee.h"
 
 namespace melange::simland {
 namespace {
@@ -50,7 +51,8 @@ int NilReason(l5::State* L, const char* why) {
     return 2;
 }
 
-// Budget: CarvesPerTick a tick and CarvesPerTurn a turn (the turn counter of wum.sim.turn()).
+// Budget: perTick calls a tick (a carveLine stroke is one call) and perTurn spheres a turn (the turn counter of
+// wum.sim.turn()). n > 0 always (the callers check it).
 bool Spend(int n) {
     const uint32_t tick = sim::Tick(), turn = simcore::g.turns;
     if (tick != g_budget.tick) {
@@ -61,8 +63,8 @@ bool Spend(int n) {
         g_budget.turn = turn;
         g_budget.inTurn = 0;
     }
-    if (g_budget.inTick + n > g_limits.perTick || g_budget.inTurn + n > g_limits.perTurn) return false;
-    g_budget.inTick += n;
+    if (n <= 0 || g_budget.inTick + 1 > g_limits.perTick || g_budget.inTurn + n > g_limits.perTurn) return false;
+    g_budget.inTick += 1;
     g_budget.inTurn += n;
     return true;
 }
@@ -107,6 +109,11 @@ size_t HashBytes(uint8_t* out, size_t cap) {
     if (cap < kHashBytes) return 0;
     memcpy(out, &g_digest, 8);
     memcpy(out + 8, &g_stats.carves, 4);
+    // The rules every peer must share: the limits and whether the engine side is live.
+    out[12] = static_cast<uint8_t>(g_limits.perTick);
+    out[13] = g_backend ? 1 : 0;
+    const uint16_t turn = static_cast<uint16_t>(g_limits.perTurn);
+    memcpy(out + 14, &turn, 2);
     return kHashBytes;
 }
 
@@ -119,6 +126,7 @@ int Carve(float x, float y, float z, float radius, const char** why) {
     if (!g_backend) return *why = "unavailable", -1;
     if (!Finite(x) || !Finite(y) || !Finite(z) || !Finite(radius) || radius < kMinRadius || radius > kMaxRadius)
         return *why = "bad arguments", -1;
+    if (simmelee::InHit()) return *why = "in hit", -1;  // inside the engine's strike loop: defer to the next tick
     if (!Spend(1)) {
         ++g_stats.refused;
         return *why = "budget", -1;
@@ -144,7 +152,8 @@ int __cdecl LCarve(l5::State* L) {
 
 // wum.sim.carveLine(x0, y0, z0, x1, y1, z1, radius [, step]) -> removed, spheres | nil, reason
 // Spheres every `step` (default radius/2, at least radius/4) from the start to the end inclusive, at most 16; the
-// whole stroke is refused up front when the budget cannot take every sphere, so a stroke is never cut short.
+// stroke is one call against the per-tick budget and its spheres count against the per-turn one, and it is refused
+// up front when the budget cannot take it, so a stroke is never cut short.
 int __cdecl LCarveLine(l5::State* L) {
     const auto& a = l5::A();
     float v[8];
@@ -166,12 +175,14 @@ int __cdecl LCarveLine(l5::State* L) {
     if (!sim::InMatch()) return NilReason(L, "not in a match");
     if (!g_backend) return NilReason(L, "unavailable");
     if (r < kMinRadius || r > kMaxRadius) return NilReason(L, "bad arguments");
-    if (step < r * 0.25f) step = r * 0.25f;
+    if (simmelee::InHit()) return NilReason(L, "in hit");
+    if (!(step >= r * 0.25f)) step = r * 0.25f;  // also a NaN-free floor: r is finite and >= 1
     const float d[3] = {v[3] - v[0], v[4] - v[1], v[5] - v[2]};
     const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-    int n = static_cast<int>(std::ceil(len / step)) + 1;
-    if (len <= 0.f) n = 1;
-    if (n > kMaxLineSpheres) return NilReason(L, "too long");
+    // Finite inputs can still overflow the length (1e38 apart): check it before any cast to int.
+    if (!Finite(len) || !Finite(step) || len > step * static_cast<float>(kMaxLineSpheres)) return NilReason(L, "too long");
+    int n = len <= 0.f ? 1 : static_cast<int>(std::ceil(len / step)) + 1;
+    if (n <= 0 || n > kMaxLineSpheres) return NilReason(L, "too long");
     if (!Spend(n)) {
         ++g_stats.refused;
         return NilReason(L, "budget");

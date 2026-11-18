@@ -255,11 +255,11 @@ int __cdecl LHeld(l5::State* L) {
     return 4;
 }
 
-// reach(weapon) -> boolean: the active worm wields it and the idle sweep sees a target in range
+// reach(weapon) -> boolean: the active worm wields it and its last idle sweep had a worm in the swing
 int __cdecl LReach(l5::State* L) {
     const int c = CheckName(L, "reach");
     if (c == -2) return Raise(L);
-    l5::A().pushboolean(L, c >= 0 && WieldedClaim(nullptr) == c && g_backend->TargetInRange());
+    l5::A().pushboolean(L, c >= 0 && WieldedClaim(nullptr) == c && g_backend->WormInRange());
     return 1;
 }
 
@@ -418,6 +418,7 @@ int Claims(ClaimInfo* out, int max) {
 }
 
 bool Claimed(int weaponIndex) { return ClaimByIndex(weaponIndex) >= 0; }
+bool InHit() { return g_inHit; }
 
 bool OnFire(int slot, bool pressed) {
     if (!g_backend || slot < 0) return false;
@@ -429,10 +430,11 @@ bool OnFire(int slot, bool pressed) {
     }
     if (g_held.on) return g_held.slot == slot && g_held.mode == Mode::Dig;  // a repeat of the held press
     const int c = ClaimByIndex(g_backend->WeaponOf(slot));
-    if (c < 0 || !g_claims[c].dig) return false;
-    if (g_backend->EntityState() > 0) return false;  // mid-swing: the engine's own business
-    Mode m = g_claims[c].mode;
-    if (m == Mode::Auto) m = g_backend->TargetInRange() ? Mode::Strike : Mode::Dig;
+    if (c < 0) return false;
+    if (g_backend->EntityState() > 0) return false;  // mid-swing: the engine's own business, no event
+    // dig = false: the gate is off, every press goes to the engine; press and release are still reported.
+    Mode m = g_claims[c].dig ? g_claims[c].mode : Mode::Strike;
+    if (m == Mode::Auto) m = g_backend->WormInRange() ? Mode::Strike : Mode::Dig;
     g_held.on = true;
     g_held.slot = slot;
     g_held.claim = c;
@@ -521,6 +523,7 @@ size_t HashBytes(uint8_t* out, size_t cap) {
     const uint16_t q = static_cast<uint16_t>(g_queued);
     memcpy(out + n, &q, 2);
     n += 2;
+    out[n++] = g_backend ? 1 : 0;  // a peer whose Melee module is inert (layout check failed) shows at tick 0
     return n;
 }
 

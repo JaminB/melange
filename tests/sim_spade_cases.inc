@@ -28,7 +28,7 @@ struct FakeMelee final : sm::Backend {
     }
     int ActiveSlot() override { return active; }
     int WeaponOf(int slot) override { return slot == active ? weapon : -1; }
-    bool TargetInRange() override { return inRange; }
+    bool WormInRange() override { return inRange; }
     int EntityState() override { return state; }
     const char* Strike() override {
         if (state) return "busy";
@@ -43,6 +43,7 @@ local s = wum.sim.storage
 local function r(...) local t = {} for i = 1, arg.n do t[i] = tostring(arg[i]) end return table.concat(t, ",") end
 s.claim = r(wum.sim.melee.claim("kWeaponBaseballBat", {dig = true}))
 s.claimBad = r(wum.sim.melee.claim("kWeaponBazooka"))
+s.claimProd = r(wum.sim.melee.claim("kWeaponProd"))
 s.mode = r(wum.sim.melee.mode("kWeaponBaseballBat"))
 s.list = table.getn(wum.sim.melee.list()) .. ":" .. wum.sim.melee.list()[1].mode
 s.carve = r(wum.sim.carve(1, 2, 3, 10))
@@ -62,6 +63,10 @@ wum.sim.melee.on("hit", "kWeaponBaseballBat", function(ev, w, tick, a, v, x, y, 
     wum.sim.melee.result({cancel = true})
     s.anchorV = r(wum.sim.worm(v):anchor(true))
     s.inHitStrike = r(wum.sim.melee.strike("kWeaponBaseballBat"))
+    s.inHitCarve = r(wum.sim.carve(1, 2, 3, 10))
+    s.inHitLine = r(wum.sim.carveLine(0, 0, 0, 10, 0, 0, 10))
+    s.inHitKill = r(wum.sim.worm(v):kill())
+    s.inHitHold = wum.sim.holdTurn and r(wum.sim.holdTurn(10)) or "absent"
   else
     wum.sim.melee.result({damage = 10, impulse = 0.15})
   end
@@ -69,7 +74,8 @@ end)
 wum.events.on("sim.wormKilled", function(ev, slot, tick) add("killed:" .. slot) end)
 wum.events.on("tick", function(t)
   if t == 3 then s.held3 = r(wum.sim.melee.held("kWeaponBaseballBat")) end
-  if t == 4 then s.line = r(wum.sim.carveLine(0, 0, 0, 40, 0, 0, 10, 10)) s.long = r(wum.sim.carveLine(0, 0, 0, 1000, 0, 0, 10)) end
+  if t == 4 then s.line = r(wum.sim.carveLine(0, 0, 0, 40, 0, 0, 10, 10)) s.long = r(wum.sim.carveLine(0, 0, 0, 1000, 0, 0, 10))
+                 s.huge = r(wum.sim.carveLine(-1e38, -1e38, -1e38, 1e38, 1e38, 1e38, 10)) end
   if t == 5 then s.reach = r(wum.sim.melee.reach("kWeaponBaseballBat")) end
   if t == 6 then s.strike = r(wum.sim.melee.strike("kWeaponBaseballBat")) end
   if t == 8 then s.kill = r(wum.sim.worm(2):kill({explode = false, grave = true, throes = 40}))
@@ -113,7 +119,7 @@ void TestSpade() {
 
     Expect(Storage("spade", "claim") == "true" && Storage("spade", "claimBad") == "nil,not melee",
            "claim: a melee weapon only: " + Storage("spade", "claimBad"));
-    Expect(Storage("spade", "mode") == "auto" && Storage("spade", "list") == "1:auto", "mode and list");
+    Expect(Storage("spade", "mode") == "auto" && Storage("spade", "list") == "2:auto", "mode and list");
     Expect(Storage("spade", "carve") == "3" && land.calls.size() == 1 && land.calls[0] == "1,2,3,10",
            "carve passes its arguments and answers the removed count: " + Storage("spade", "carve"));
     Expect(Storage("spade", "carveBad") == "nil,bad arguments" && Storage("spade", "raises") == "false",
@@ -133,6 +139,7 @@ void TestSpade() {
     Expect(Storage("spade", "line") == "15,5" && land.calls.size() == 6,
            "carveLine: 5 spheres every radius/2: " + Storage("spade", "line"));
     Expect(Storage("spade", "long") == "nil,too long", "carveLine refuses a stroke over 16 spheres");
+    Expect(Storage("spade", "huge") == "nil,too long", "carveLine refuses a stroke whose length overflows: " + Storage("spade", "huge"));
     const char* why = nullptr;
     Expect(sl::Carve(0, 0, 0, 5, &why) == -1 && std::string(why) == "budget", "the turn budget (6) is spent");
     melee.inRange = true;
@@ -148,6 +155,10 @@ void TestSpade() {
     Expect(h1.cancel && !h1.setDamage, "the first hit is cancelled (the execution)");
     Expect(Storage("spade", "anchorV") == "true" && sw::Anchored(2), "the hit handler anchors the victim");
     Expect(Storage("spade", "inHitStrike") == "nil,in hit", "strike() is refused inside a hit");
+    Expect(Storage("spade", "inHitCarve") == "nil,in hit" && Storage("spade", "inHitLine") == "nil,in hit" &&
+               Storage("spade", "inHitKill") == "nil,in hit" && Storage("spade", "inHitHold") == "nil,in hit",
+           "carve, carveLine, kill and holdTurn are refused inside a hit: " + Storage("spade", "inHitHold"));
+    Expect(sl::GetStats().carves == 6, "a refused carve inside a hit spends nothing");
     const sm::HitResult h2 = sm::OnHit(1, 2, at, 30, 0.12f);
     Expect(!h2.cancel && h2.setDamage && h2.damage == 10 && h2.setImpulse && std::fabs(h2.impulse - 0.15f) < 1e-6f,
            "later hits get the Shiv's numbers");
@@ -169,6 +180,10 @@ void TestSpade() {
     Expect(sw::KillPending(2, &o) && !o.explode && o.grave && o.throes == 40, "the kill options are kept for the engine hooks");
     uint8_t kh[sw::kKillHashBytes];
     Expect(sw::KillHashBytes(kh, sizeof kh) == sw::kKillHashBytes && kh[20] == 1 && kh[21] == 2, "kill hash: stage and options");
+    Expect(!sw::KillDying(2, nullptr), "posted, not yet confirmed by the engine");
+    Expect(sw::KillDue(2, &o) && o.throes == 40 && sw::KillDying(2, &o) && !o.explode,
+           "the engine's TimeToDie confirms it (the explosion and grave hooks read the options)");
+    Expect(sw::KillHashBytes(kh, sizeof kh) == sw::kKillHashBytes && kh[20] == 2, "kill hash: dying");
     worms.slots[2].w.active = false;  // the throes ended: the engine unspawned it
     core::Update();  // tick 9
     Expect(!sw::KillPending(2, nullptr) && !sw::AnyKillPending(), "the kill completed");
@@ -178,12 +193,38 @@ void TestSpade() {
     const std::string log = Storage("spade", "log");
     Expect(log == "press:1:dig;release:1:2:dig;press:1:strike;release:1:0:strike;hit:1>2:30;hit:1>2:30;strike:1;done:1;killed:2;",
            "event order: " + log);
+    // A kill the engine never confirms is dropped after kKillConfirmTicks, without sim.wormKilled, and can be retried.
+    const char* kwhy = nullptr;
+    Expect(sw::Kill(0, sw::KillOpts{}, &kwhy) && sw::KillPending(0, nullptr), "a second kill is posted");
+    for (uint32_t k = 0; k <= sw::kKillConfirmTicks + 1; ++k) core::Update();
+    Expect(!sw::KillPending(0, nullptr) && Storage("spade", "log") == log, "an unconfirmed kill is dropped, no event");
+    Expect(sw::Kill(0, sw::KillOpts{}, &kwhy) && worms.kills == std::vector<int>({2, 0, 0}), "and can be posted again");
+    // dig = false: no gate, but press and release are reported (mode "strike").
+    melee.weapon = 11;
+    melee.state = 0;  // the scripted strike's swing is over
+    Expect(!sm::OnFire(1, true) && !sm::OnFire(1, false), "a claim without dig passes every input");
+    core::Update();
+    const std::string log2 = Storage("spade", "log");
+    Expect(log2 == log + "release:1:0:strike;", "a claim without dig still reports press and release: " + log2);
+    melee.weapon = 10;
     uint8_t mh[sm::kHashBytes], mh2[sm::kHashBytes];
     Expect(sm::HashBytes(mh, sizeof mh) == sm::kHashBytes && sm::HashBytes(mh2, sizeof mh2) == sm::kHashBytes &&
                memcmp(mh, mh2, sizeof mh) == 0 && mh[0] == 10,
            "melee hash: the claim and the hits, deterministic");
     uint8_t lh[sl::kHashBytes];
-    Expect(sl::HashBytes(lh, sizeof lh) == sl::kHashBytes && sl::GetStats().carves == 6, "land hash: six carves folded");
+    Expect(sl::HashBytes(lh, sizeof lh) == sl::kHashBytes && sl::GetStats().carves == 6 && lh[12] == 5 && lh[13] == 1,
+           "land hash: six carves folded, the limits and the live backend");
+    // The per-tick budget counts calls: a carveLine stroke is one.
+    sl::Limits few;
+    few.perTick = 2;
+    few.perTurn = 100;
+    sl::SetLimits(few);
+    sl::ResetMatch();
+    why = nullptr;
+    Expect(sl::Carve(0, 0, 0, 5, &why) == 3 && sl::Carve(0, 0, 0, 5, &why) == 3 && sl::Carve(0, 0, 0, 5, &why) == -1 &&
+               std::string(why) == "budget",
+           "two calls a tick, the third is refused");
+    sl::SetLimits(sl::Limits{});
     land.indestructible = true;
     sl::ResetMatch();
     why = nullptr;
