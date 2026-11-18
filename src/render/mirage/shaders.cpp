@@ -23,6 +23,7 @@
 #include "melange/testcmd.h"
 #include "render/mirage/engine.h"
 #include "render/mirage/modfs.h"
+#include "render/mirage/pose.h"
 #include "render/mirage/shaders_internal.h"
 #include "render/mirage/stages.h"
 
@@ -205,6 +206,7 @@ void __cdecl HkBind(CGprogram p) {
     }
     g_bind(p);
     if (glsl::Installed()) glsl::OnBind(p);
+    pose::OnBind(p);
 }
 
 void __cdecl HkUpdate(CGprogram p) {
@@ -220,6 +222,11 @@ bool HookBind() {
         g_bindHooked = mem::HookIAT("cgGL.dll", "cgGLBindProgram", reinterpret_cast<void*>(&HkBind), reinterpret_cast<void**>(&g_bind));
     return g_bindHooked;
 }
+}  // namespace
+
+bool RequireBindHook() { return HookBind(); }
+
+namespace {
 
 // Engine values are set before Bind flushes them (cgGLBindProgram on a switch, else cgUpdateProgramParameters), so
 // re-setting ours in front of both makes them win.
@@ -314,6 +321,7 @@ CGprogram __cdecl HkCreate(CGcontext ctx, int type, const char* file, int profil
         }
         CGprogram p = g_create(ctx, type, file, profile, entry, args);
         Remember(base, entry, stage, p, "", false);
+        pose::OnCreate(p, entry, stage);
         return p;
     }
     src::Job job;
@@ -337,6 +345,7 @@ CGprogram __cdecl HkCreate(CGcontext ctx, int type, const char* file, int profil
                  job.owner.c_str());
     if (p) {
         glsl::OnCreate(p, base, entry, stage, vdir);
+        pose::OnCreate(p, entry, stage);
         std::lock_guard lk(g_mx);
         ApplyTo(p);
         g_cg.Drain();

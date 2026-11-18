@@ -40,6 +40,7 @@
 #include "media/pack.h"
 #include "net/peerbus.h"
 #include "net/peerbus_api.h"
+#include "render/mirage/pose.h"
 
 namespace fake {
 struct Record {
@@ -344,6 +345,42 @@ bool WorldToScreen(const float*, float*, float*, float*) { return false; }
 void WindowSize(int* w, int* h) { *w = 1024, *h = 768; }
 Timing GetTiming() { return {}; }
 }  // namespace render
+namespace mirage::pose {
+const void* g_poseOwner[16] = {};
+logic::Spec g_spec{};
+int g_poseFrames = -1, g_copySlot = -1;
+logic::M4 g_head{};
+Result Set(const void* owner, int slot, const logic::Spec& s, int frames) {
+    if (slot < 0 || slot > 15) return Result::Invalid;
+    if (g_poseOwner[slot] && g_poseOwner[slot] != owner) return Result::Busy;
+    g_poseOwner[slot] = owner;
+    g_spec = s;
+    g_poseFrames = frames;
+    return Result::Ok;
+}
+bool Clear(const void* owner, int slot) {
+    bool any = false;
+    for (int i = 0; i < 16; ++i)
+        if ((slot < 0 || slot == i) && g_poseOwner[i] && (!owner || g_poseOwner[i] == owner)) g_poseOwner[i] = nullptr, any = true;
+    return any;
+}
+Result SetCopy(const void*, int slot, const logic::M4& head, int) {
+    g_copySlot = slot;
+    g_head = head;
+    return Result::Ok;
+}
+bool ClearCopy(const void*, int slot) {
+    const bool was = g_copySlot >= 0 && (slot < 0 || slot == g_copySlot);
+    if (was) g_copySlot = -1;
+    return was;
+}
+bool Bones(int slot, float out[logic::kBones][3]) {
+    if (slot != 2) return false;
+    for (int i = 0; i < logic::kBones; ++i) out[i][0] = static_cast<float>(i), out[i][1] = 1, out[i][2] = 2;
+    return true;
+}
+const char* Status() { return "ok"; }
+}  // namespace mirage::pose
 namespace gltrace {
 bool GpuTimerSupported() { return false; }
 GpuTime GetGpuTime(GpuRegion) { return {-1.0, false}; }
@@ -1420,6 +1457,37 @@ void TestMeshes() {
     sandbox::UnloadMod("msh2");
 }
 
+void TestWormPose() {
+    SetMod("pose", "");
+    SetMod("pose2", "");
+    Expect(sandbox::LoadMod("pose") && sandbox::LoadMod("pose2"), "pose mods load");
+    namespace mp = mirage::pose;
+    ExpectEq(Eval("pose", "return wum.render.wormPose(3, {frames = 7, root = {rot = {-90, 0, 0}, move = {0, 2, 0}},"
+                          " rightHand = {target = {1, 2, 3}}, head = {rot = {pitch = 10}}, hide = {head = 'stump'}})"),
+             "true", "a pose is set");
+    Expect(mp::g_poseOwner[3] && mp::g_poseFrames == 7 && mp::g_spec.root.on && mp::g_spec.root.rot[0] == -90 &&
+               mp::g_spec.root.move[1] == 2 && mp::g_spec.group[mp::logic::kRightHand].hasTarget &&
+               mp::g_spec.group[mp::logic::kRightHand].target[2] == 3 && mp::g_spec.group[mp::logic::kHead].rot[0] == 10 &&
+               mp::g_spec.stump && !mp::g_spec.group[mp::logic::kTail].on,
+           "the spec reaches MiragePose");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(3, {})"), "false	busy", "another mod's pose is busy");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(3, nil)"), "false", "another mod cannot clear it");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(3, nil)"), "true", "the owner clears it");
+    ExpectEq(Eval("pose", "return wum.render.wormCopy(4, {pos = {10, 20, 30}, rot = {0, 90, 0}, frames = 5})"), "true",
+             "a head copy is set");
+    Expect(mp::g_copySlot == 4 && std::fabs(mp::g_head.m[12] - 10) < 1e-4f && std::fabs(mp::g_head.m[14] - 30) < 1e-4f,
+           "the copy's transform carries the neck to pos");
+    ExpectEq(Eval("pose", "local b = wum.render.wormBones(2) return b.wrist_right.x, b.main.y, wum.render.wormBones(1)"),
+             "26	1	nil", "wormBones names the bones");
+    ExpectEq(Eval("pose", "return wum.render.wormPoseStatus()"), "ok", "status");
+    const char* bad[] = {"wum.render.wormPose(16, {})", "wum.render.wormPose(1.5, {})", "wum.render.wormPose(1, 5)",
+                         "wum.render.wormPose(1, {frames = 0})", "wum.render.wormPose(1, {root = 5})",
+                         "wum.render.wormPose(1, {hide = {head = 'gone'}})", "wum.render.wormCopy(1, {})"};
+    for (const char* code : bad) Expect(Eval("pose", code).rfind("ERR:", 0) == 0, std::string("raises: ") + code);
+    sandbox::UnloadMod("pose");
+    Expect(mp::g_poseOwner[3] == nullptr && mp::g_copySlot == -1, "unloading the mod clears its poses and copies");
+}
+
 void TestCameraOverride() {
     SetMod("cam", "");
     SetMod("cam2", "");
@@ -1771,6 +1839,7 @@ int main() {
         {"samples", TestSamples},
         {"game", TestGame},       {"match", TestMatch},     {"graphics", TestGraphics}, {"sprites", TestSprites},
         {"meshes", TestMeshes},   {"camera override", TestCameraOverride},
+        {"worm pose", TestWormPose},
         {"shader textures", TestShaderTextures},
         {"input", TestInput}, {"audio", TestAudio},
         {"owner events", TestOwnerEvents}, {"media", TestMedia}, {"peer", TestPeer}, {"mod input", TestModInput},
