@@ -174,6 +174,43 @@ the model-view **[I]**. Three options:
 
    Deltas composed at joint level are the same `D_i` that `Compose` builds, so `pose_logic.h` still applies.
 
+## Implemented in Melange 0.16 (MiragePose, CPU route) [L]
+
+MiragePose now runs the three layers together on build #1077 (`src/render/mirage/pose.cpp`; the maths and the checks
+are in `pose_logic.h` and `tests/pose_selftest.cpp`):
+
+| Layer | Hook | Lua |
+|---|---|---|
+| A, body | post-hook on `WXWormGraphicEntity` update `0x5a4740`: `SetRotation` / `SetPosition` (vtable `+0x54` / `+0x50`, force 1) on the worm mesh `gfx+0x24` | `body = {pitch, roll, yaw / heading, move / at}` |
+| B, clips | wrap of `XAnimInstance::Evaluate` `0x7ad0ef`: the `{weight, time, rate}` table patched and put back | `clips`, `clipMode`, `sliders` |
+| C, palette | inline hook on the XSkinShape method `0x790cd0`: the 34 `bone+0x70` matrices replaced for the call and put back; a second call draws the head copy | `root`, `head`, `tail`, hands, `hide.head`, `wormCopy`, `wormBones` |
+| D, accessories | in hook A: `SetVisible(0)` (vtable `+0x5c`) on the hat `gfx+0x28` and the other accessories `+0x2c`, `+0x30`; shown again as the engine's mask counters say (`+0x54` for the hat, `+0x58` for the others, as `0x5a17d0` does) | `hide.attachments`, and always under a stump |
+
+Each hook has its own `mem::Expect`; a missing one turns off only its layer, and `wum.render.wormPoseCaps()` says which
+layers are on. Layer C finds the worm by the shape's first `XBone*` (per worm instance), learned on draws where one worm
+is alone near the main pivot and trusted while the pivot stays within 26 units of that worm's drawn origin (A records
+the origins). So the two worms of the mount, 8 to 12 units apart, are never confused (the `SkinKeys` checks in the
+self-test).
+
+Seen in instance C (2026-11-18), `Melange\m1t\gsm_*.png`; grids in `images/gravespade-pose/`:
+
+- `pose.test <slot> lie` laid a worm on its back with its helmet and shadow; `ride <slot>` carried another onto it;
+  `clip HoldBat 0.5 2` raised its fists; `stump` hid the helmet with the head, and `off` brought it back; `copy` drew the
+  head next to the stump. The status was `"ok"` from the first identified draw.
+- The body layer survived turn changes (probe every 2 s across turn 7: the drawn origin stayed 4 units up).
+- **A worm on its back has its tail standing up** (`impl-tail-angle.jpg`): a worm's tail runs back along the ground,
+  and pitch -90 turns that into the vertical. The `TailAngle` slider at 0 straightens the tail in line with the body,
+  so the worm lies flat; at 2 it bends the other way. Kindjal eases `TailAngle` to 0 with the fall, and keeps it there
+  under the stump.
+- `impl-mount-side.jpg` (a fixed side camera) and `impl-mount-cinematic.jpg` (Kindjal's own camera): the Kindjal 1.4
+  execution preview. The victim turns, falls on its back and cowers (`Cower`, `Terror`), the attacker hops onto its
+  lower body hunched over the spade (`HoldBat`), both worms' hands on the shaft, the blade on the chest, the raise
+  (`Fire2Bat` held at 0.35), the chop (`Fire2Bat` 0.35 to 1), the head off as the worm's own head (`wormCopy`, its face
+  and team skin) over a flat stump with the helmet hidden, then the dismount.
+- Not seen yet: the throes of a real kill (only the menu preview was run, which kills nobody), the dig with the hands
+  on the grip in a normal turn (the automation could not open the weapon panel in that session), a LocalNet run, and
+  Sunstone.
+
 ## Addresses (build #1077)
 
 | What | Address |

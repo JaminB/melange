@@ -2,7 +2,9 @@
 // MiragePose logic without GL: the worm skeleton (W4.Worm, Bundl474.xom) and the palette maths behind
 // wum.render.wormPose / wormCopy. Header-only so the offline self-test (tests/pose_selftest.cpp) checks it directly.
 //
-// The game skins worms on the GPU (CG/FixedFunction.cg, FFVertex*Skinned): world = Σ w · (v · BlendMat[i]) with the
+// The palette is the same on both skinning routes. Build #1077 blends worms on the CPU from XBone+0x70 (the 34 matrices
+// of each XSkinShape, docs/gravespade-re-pose-cpu-skin.md); a build that skins on the GPU uses the Cg programs
+// (CG/FixedFunction.cg, FFVertex*Skinned): world = Σ w · (v · BlendMat[i]) with the
 // Cg row-vector convention, `float4x4 BlendMat[35] : register(c8)`, uploaded as ARB vertex program locals, four
 // registers (rows) per bone. Row 3 holds the translation. BlendMat[i] = inverse bind pose (XBone.PoseMatrix) x the
 // bone's world transform this frame, so for a bind-space point p, p · BlendMat[i] is where bone i puts it.
@@ -285,4 +287,160 @@ inline bool NearHead(const float t[3], const float (*head)[3], float radius = kA
     }
     return false;
 }
+
+// ---------------------------------------------------------------- the CPU-skinned back end (build #1077)
+// docs/gravespade-re-pose-anim.md and gravespade-re-pose-cpu-skin.md. Three render-only layers, each at its own point of
+// the engine's frame:
+//   Body  - the worm's XMeshInstance transform, written after WXWormGraphicEntity's update (0x5a4740). Hats, glasses,
+//           the locators and the shadow follow it.
+//   Clips - the XAnimInstance {weight, time, rate} table, patched around Evaluate (0x7ad0ef) and put back.
+//   Spec  - the palette above (bone+0x70, the CPU equivalent of BlendMat), patched around XOglDrawAction's XSkinShape
+//           method (0x790cd0). It stacks on the moved and animated body, because the cull pass rebuilds bone+0x70 from
+//           the joints every frame before the draw.
+
+// The engine draws a worm's mesh this far above its logic position (0x5a00b0: container.pos + (0, 3, 0)).
+constexpr float kDrawLift = 3.f;
+// On the CPU path the main bone's pivot sits at the mesh origin, kDrawLift over the logic feet ([L], instance C).
+constexpr float kCpuCentreY = kDrawLift;
+
+struct Body {
+    bool on = false;
+    bool turn = false;          // a rotation is written (pitch, roll, yaw or heading given)
+    float pitch = 0;            // degrees, in the worm's frame after the heading: + tips it forward onto its face
+    float roll = 0;             // degrees about its forward axis (combined with pitch the order is inferred: Ry*Rx*Rz)
+    float yaw = 0;              // degrees: a delta on the drawn yaw, or the absolute heading with absHeading
+    bool absHeading = false;
+    float move[3] = {0, 0, 0};  // a delta on the drawn origin, or (absAt) the logic feet position to draw at
+    bool absAt = false;
+};
+
+// The Euler angles (radians) for XMeshInstance::SetRotation: {x = pitch, y = heading, z = roll}.
+inline void BodyEuler(const Body& b, float drawnYawRad, float out[3]) {
+    constexpr float k = 3.14159265358979f / 180.f;
+    out[0] = b.pitch * k;
+    out[1] = b.absHeading ? b.yaw * k : drawnYawRad + b.yaw * k;
+    out[2] = b.roll * k;
+}
+// The mesh origin to draw at, from the origin the game just wrote.
+inline void BodyOrigin(const Body& b, const float drawn[3], float out[3]) {
+    if (b.absAt) {
+        out[0] = b.move[0], out[1] = b.move[1] + kDrawLift, out[2] = b.move[2];
+        return;
+    }
+    for (int i = 0; i < 3; ++i) out[i] = drawn[i] + b.move[i];
+}
+// The same turn as a row-vector matrix in this file's convention, for checks and for predicting a pose: the engine's
+// +pitch takes the worm's up (+Y) toward its facing, which is Rotate's -pitch; the heading is Rotate's yaw.
+inline M4 BodyRotate(float pitchDeg, float headingDeg, float rollDeg) { return Rotate(-pitchDeg, headingDeg, rollDeg); }
+// Where a point given relative to the unturned mesh origin (bind space, the worm facing +Z) is drawn.
+inline void BodyPoint(const float origin[3], float pitchDeg, float headingDeg, float rollDeg, const float local[3],
+                      float out[3]) {
+    Point(Mul(BodyRotate(pitchDeg, headingDeg, rollDeg), Translate(origin)), local, out);
+}
+
+// Clip edits, by clip id in the worm's XAnimClipLibrary (resolved from names when the pose is set).
+struct Clips {
+    static constexpr int kMax = 8, kSliders = 8;
+    int n = 0;
+    short id[kMax] = {};
+    float time[kMax] = {}, weight[kMax] = {};
+    bool base = false;  // clipMode "base": every clip but Base (baseId) and ours at weight 0
+    short baseId = -1;
+    int sn = 0;         // pose sliders (HeadRotX, RightArmRotY, TailAngle...): t in 0..2, 1 = neutral
+    short sid[kSliders] = {};
+    float st[kSliders] = {};
+    bool On() const { return n > 0 || sn > 0 || base; }
+};
+constexpr float kMaxClipWeight = 5.f;  // above about 5 some scale and translation channels exaggerate ([L])
+inline float ClampWeight(float w) { return !(w > 0.f) ? 0.f : (w > kMaxClipWeight ? kMaxClipWeight : w); }
+inline float ClampSlider(float t) { return !(t > 0.f) ? 0.f : (t > 2.f ? 2.f : t); }
+inline float ClampTime(float t) { return !(t > 0.f) ? 0.f : (t > 600.f ? 600.f : t); }
+
+// Applies the edits to an XAnimInstance entry table (count entries of {weight, time, rate}). Our clips are held (rate
+// 0); a slider keeps its own weight (1 when the game had it off) and takes our time.
+inline void ApplyClips(const Clips& c, float* e, int count) {
+    if (c.base)
+        for (int i = 0; i < count; ++i)
+            if (i != c.baseId) e[i * 3] = 0.f;
+    for (int k = 0; k < c.n; ++k) {
+        const int i = c.id[k];
+        if (i < 0 || i >= count) continue;
+        e[i * 3 + 0] = c.weight[k];
+        e[i * 3 + 1] = c.time[k];
+        e[i * 3 + 2] = 0.f;
+    }
+    for (int k = 0; k < c.sn; ++k) {
+        const int i = c.sid[k];
+        if (i < 0 || i >= count) continue;
+        if (!(e[i * 3] > 0.f)) e[i * 3] = 1.f;
+        e[i * 3 + 1] = c.st[k];
+        e[i * 3 + 2] = 0.f;
+    }
+}
+
+// Which worm a CPU-skinned draw is. Each worm has its own XBone objects ([L]), so the first bone's address is a key
+// that survives any pose. It is learned on a draw that is unambiguous by position (the main pivot within kLearn of one
+// worm's expected centre and every other worm kApart or more away), and then trusted while the pivot stays within
+// kTrust of that worm's centre, however close another worm is (the mount: the attacker drawn 8 units over the victim).
+struct SkinKeys {
+    static constexpr int kN = 32;
+    static constexpr float kLearn = 8.f, kApart = 20.f, kTrust = 26.f;
+    struct E {
+        unsigned key = 0;
+        int slot = -1;
+        unsigned long long seen = 0;
+    } e[kN];
+    int Find(unsigned key) const {
+        for (int i = 0; i < kN; ++i)
+            if (e[i].key == key && e[i].slot >= 0) return i;
+        return -1;
+    }
+    void Forget(int slot) {
+        for (E& x : e)
+            if (x.slot == slot) x = E{};
+    }
+    void Learn(unsigned key, int slot, unsigned long long frame) {
+        int i = Find(key);
+        if (i < 0 || e[i].slot != slot) {
+            if (i >= 0) e[i] = E{};
+            Forget(slot);  // a slot has one worm: an older key for it is stale
+            i = 0;
+            for (int k = 0; k < kN; ++k) {
+                if (e[k].slot < 0) {
+                    i = k;
+                    break;
+                }
+                if (e[k].seen < e[i].seen) i = k;
+            }
+        }
+        e[i].key = key, e[i].slot = slot, e[i].seen = frame;
+    }
+    // centres[i]: worm i's expected main pivot this frame; slots[i]: its slot. Returns the index into centres, or -1.
+    int Resolve(unsigned key, const float p[3], const float (*centres)[3], const int* slots, int n, unsigned long long frame) {
+        auto d2 = [&](int i) {
+            const float d[3] = {p[0] - centres[i][0], p[1] - centres[i][1], p[2] - centres[i][2]};
+            return d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        };
+        const int k = Find(key);
+        if (k >= 0)
+            for (int i = 0; i < n; ++i)
+                if (slots[i] == e[k].slot && d2(i) <= kTrust * kTrust) {
+                    e[k].seen = frame;
+                    return i;
+                }
+        int best = -1;
+        float b1 = 1e30f, b2 = 1e30f;
+        for (int i = 0; i < n; ++i) {
+            const float d = d2(i);
+            if (d < b1) {
+                b2 = b1, b1 = d, best = i;
+            } else if (d < b2) {
+                b2 = d;
+            }
+        }
+        if (best < 0 || b1 > kTrust * kTrust) return -1;
+        if (b1 <= kLearn * kLearn && b2 >= kApart * kApart) Learn(key, slots[best], frame);
+        return best;
+    }
+};
 }  // namespace melange::mirage::pose::logic

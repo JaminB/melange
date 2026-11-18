@@ -360,13 +360,17 @@ Timing GetTiming() { return {}; }
 namespace mirage::pose {
 const void* g_poseOwner[16] = {};
 logic::Spec g_spec{};
+logic::Body g_body{};
+logic::Clips g_clips{};
 int g_poseFrames = -1, g_copySlot = -1;
 logic::M4 g_head{};
-Result Set(const void* owner, int slot, const logic::Spec& s, int frames) {
+Result Set(const void* owner, int slot, const logic::Spec& s, const logic::Body* body, const logic::Clips* clips, int frames) {
     if (slot < 0 || slot > 15) return Result::Invalid;
     if (g_poseOwner[slot] && g_poseOwner[slot] != owner) return Result::Busy;
     g_poseOwner[slot] = owner;
     g_spec = s;
+    g_body = body ? *body : logic::Body{};
+    g_clips = clips ? *clips : logic::Clips{};
     g_poseFrames = frames;
     return Result::Ok;
 }
@@ -386,10 +390,25 @@ bool ClearCopy(const void*, int slot) {
     if (was) g_copySlot = -1;
     return was;
 }
-bool Bones(int slot, float out[logic::kBones][3]) {
+bool Bones(int slot, float out[logic::kBones][3], float neck[3], float feet[3]) {
     if (slot != 2) return false;
     for (int i = 0; i < logic::kBones; ++i) out[i][0] = static_cast<float>(i), out[i][1] = 1, out[i][2] = 2;
+    neck[0] = 4, neck[1] = 5, neck[2] = 6;
+    feet[0] = 7, feet[1] = 8, feet[2] = 9;
     return true;
+}
+// A worm library of three clips: Base 20, HoldBat 31, HeadRotX 40 (any slot but 9, which is not drawn yet).
+int ClipId(int slot, const char* name) {
+    if (slot == 9) return -2;
+    if (!_stricmp(name, "Base")) return 20;
+    if (!_stricmp(name, "HoldBat")) return 31;
+    if (!_stricmp(name, "HeadRotX")) return 40;
+    return -1;
+}
+Caps Capabilities() {
+    Caps c;
+    c.body = c.clips = c.palette = c.copy = true;
+    return c;
 }
 const char* Status() { return "ok"; }
 uint32_t IdentifiedDraws() { return 12; }
@@ -1499,12 +1518,41 @@ void TestWormPose() {
            "the copy's transform carries the neck to pos");
     ExpectEq(Eval("pose", "local b = wum.render.wormBones(2) return b.wrist_right.x, b.main.y, wum.render.wormBones(1)"),
              "26	1	nil", "wormBones names the bones");
+    ExpectEq(Eval("pose", "local b = wum.render.wormBones(2) return b.neck.z, b.feet.y"), "6	8", "wormBones adds neck and feet");
     ExpectEq(Eval("pose", "return wum.render.wormPoseStatus()"), "ok	12", "status and the identified draw count");
+    ExpectEq(Eval("pose", "local c = wum.render.wormPoseCaps() return c.body, c.clips, c.palette, c.copy, c.hideAttachments"),
+             "true	true	true	true	false", "wormPoseCaps lists the layers");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(6, {body = {pitch = -90, heading = 45, move = {0, 4, 0}},"
+                          " clips = {{name = 'holdbat', time = 0.5, weight = 9}}, clipMode = 'base', sliders = {HeadRotX = 3}})"),
+             "true", "a body, clip and slider pose is set");
+    Expect(mp::g_body.on && mp::g_body.turn && mp::g_body.pitch == -90 && mp::g_body.absHeading && mp::g_body.yaw == 45 &&
+               !mp::g_body.absAt && mp::g_body.move[1] == 4 && mp::g_spec.Empty(),
+           "the body reaches MiragePose");
+    Expect(mp::g_clips.n == 1 && mp::g_clips.id[0] == 31 && mp::g_clips.time[0] == 0.5f && mp::g_clips.weight[0] == 5.f &&
+               mp::g_clips.base && mp::g_clips.baseId == 20 && mp::g_clips.sn == 1 && mp::g_clips.sid[0] == 40 &&
+               mp::g_clips.st[0] == 2.f,
+           "clips and sliders are resolved by name and clamped");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(6, {body = {at = {1, 2, 3}, yaw = 10}})"), "true", "an absolute body");
+    Expect(mp::g_body.absAt && mp::g_body.move[2] == 3 && !mp::g_body.absHeading && mp::g_body.yaw == 10 && !mp::g_clips.On(),
+           "body.at and a yaw delta");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(6, {clips = {{name = 'Dance'}}})"), "false	no clip Dance",
+             "an unknown clip is refused");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(6, {sliders = {Nope = 1}})"), "false	no clip Nope",
+             "an unknown slider is refused");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(9, {clips = {{name = 'HoldBat'}}, body = {pitch = 5}})"), "true",
+             "clips wait for the worm's library");
+    Expect(!mp::g_clips.On() && mp::g_body.pitch == 5, "the clips are dropped until the library is known");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(6, nil), wum.render.wormPose(9, nil)"), "true	true", "cleared");
     const char* bad[] = {"wum.render.wormPose(16, {})", "wum.render.wormPose(1.5, {})", "wum.render.wormPose(1, 5)",
                          "wum.render.wormPose(1, {frames = 0})", "wum.render.wormPose(1, {root = 5})",
                          "wum.render.wormPose(1, {hide = {head = 'gone'}})", "wum.render.wormPose(1, {hide = {head = 5}})",
                          "wum.render.wormPose(1, {hide = 'stump'})", "wum.render.wormPose(1, {hide = {attachments = 'x'}})",
-                         "wum.render.wormCopy(1, {})"};
+                         "wum.render.wormCopy(1, {})", "wum.render.wormPose(1, {body = 5})",
+                         "wum.render.wormPose(1, {body = {pitch = 'x'}})", "wum.render.wormPose(1, {body = {yaw = 1, heading = 2}})",
+                         "wum.render.wormPose(1, {body = {move = {0, 0, 0}, at = {0, 0, 0}}})",
+                         "wum.render.wormPose(1, {clips = 5})", "wum.render.wormPose(1, {clips = {5}})",
+                         "wum.render.wormPose(1, {clips = {{time = 1}}})", "wum.render.wormPose(1, {clipMode = 'solo'})",
+                         "wum.render.wormPose(1, {sliders = {HeadRotX = 'x'}})"};
     for (const char* code : bad) Expect(Eval("pose", code).rfind("ERR:", 0) == 0, std::string("raises: ") + code);
     sandbox::UnloadMod("pose");
     Expect(mp::g_poseOwner[3] == nullptr && mp::g_copySlot == -1, "unloading the mod clears its poses and copies");

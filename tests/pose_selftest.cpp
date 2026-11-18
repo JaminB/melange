@@ -180,6 +180,108 @@ int main() {
                "bone names");
         Expect(lg::kPivot[17][0] == -lg::kPivot[26][0] && lg::kPivot[17][1] == lg::kPivot[26][1], "the wrists mirror");
     }
+    {  // the CPU route, layer A: the engine's Euler order (R = Ry * Rx * Rz, pitch in the worm's frame after the heading)
+        const float origin[3] = {10, 5, -3}, up[3] = {0, 1, 0}, fwd[3] = {0, 0, 1}, side[3] = {1, 0, 0};
+        float p[3];
+        lg::BodyPoint(origin, 90, 0, 0, up, p);
+        const float face[3] = {10, 5, -2};
+        Expect(Near(p, face), "body pitch +90 tips the worm forward onto its face: " + V(p));
+        lg::BodyPoint(origin, -90, 0, 0, up, p);
+        const float back[3] = {10, 5, -4};
+        Expect(Near(p, back), "body pitch -90 lays it on its back, head behind it: " + V(p));
+        lg::BodyPoint(origin, 90, 90, 0, up, p);
+        const float alongX[3] = {11, 5, -3};
+        Expect(Near(p, alongX), "heading 90 + pitch 90: the head lies along the facing (+X), as seen top-down: " + V(p));
+        lg::BodyPoint(origin, 0, 90, 0, fwd, p);
+        Expect(Near(p, alongX), "heading 90 faces +X (sin, 0, cos), like worms()[i].yaw");
+        lg::BodyPoint(origin, 30, 0, 0, fwd, p);
+        Expect(std::fabs(p[1] - (5.f - 0.5f)) < 1e-3f && std::fabs(p[2] - (-3.f + 0.8660254f)) < 1e-3f,
+               "a forward lean takes the facing down: " + V(p));
+        lg::BodyPoint(origin, 30, 0, 0, side, p);
+        const float sideOut[3] = {11, 5, -3};
+        Expect(Near(p, sideOut), "a pitch keeps the worm's right axis");
+        // The feet stay where they are under any turn: the pivot is the mesh origin.
+        const float zero[3] = {0, 0, 0};
+        lg::BodyPoint(origin, -90, 123, 0, zero, p);
+        Expect(Near(p, origin), "the turn is about the feet (the mesh origin)");
+
+        lg::Body b;
+        b.on = b.turn = true;
+        b.pitch = -90, b.yaw = 10;
+        float e[3];
+        lg::BodyEuler(b, 1.0f, e);
+        Expect(std::fabs(e[0] + 1.5707963f) < 1e-5f && std::fabs(e[1] - (1.0f + 0.17453293f)) < 1e-5f && e[2] == 0,
+               "SetRotation gets radians, the yaw as a delta on the drawn yaw");
+        b.absHeading = true;
+        lg::BodyEuler(b, 1.0f, e);
+        Expect(std::fabs(e[1] - 0.17453293f) < 1e-5f, "heading replaces the drawn yaw");
+        const float drawn[3] = {100, 53, 7};
+        float o[3];
+        b.move[0] = 1, b.move[1] = 4, b.move[2] = -2;
+        lg::BodyOrigin(b, drawn, o);
+        const float moved[3] = {101, 57, 5};
+        Expect(Near(o, moved), "move is a delta on the drawn origin");
+        b.absAt = true;
+        lg::BodyOrigin(b, drawn, o);
+        const float at3[3] = {1, 4 + lg::kDrawLift, -2};
+        Expect(Near(o, at3), "at is the logic feet, drawn kDrawLift above");
+    }
+    {  // the CPU route, layer B: clamps and the entry table
+        Expect(lg::ClampWeight(-1) == 0 && lg::ClampWeight(2.5f) == 2.5f && lg::ClampWeight(20) == lg::kMaxClipWeight &&
+                   lg::ClampWeight(std::nanf("")) == 0,
+               "clip weights clamp to 0..5 (NaN -> 0)");
+        Expect(lg::ClampSlider(-3) == 0 && lg::ClampSlider(1.2f) == 1.2f && lg::ClampSlider(9) == 2, "sliders clamp to 0..2");
+        Expect(lg::ClampTime(-1) == 0 && lg::ClampTime(1e9f) == 600, "clip times clamp to 0..600 s");
+        float t[6 * 3];
+        for (int i = 0; i < 6; ++i) t[i * 3] = 0.5f, t[i * 3 + 1] = 0.25f, t[i * 3 + 2] = 1;
+        t[4 * 3] = 0;  // a slider the game had off
+        lg::Clips c;
+        c.n = 2;
+        c.id[0] = 2, c.time[0] = 0.7f, c.weight[0] = 2;
+        c.id[1] = 99, c.time[1] = 1, c.weight[1] = 1;  // out of the table: ignored
+        c.sn = 1;
+        c.sid[0] = 4, c.st[0] = 1.4f;
+        lg::ApplyClips(c, t, 6);
+        Expect(t[2 * 3] == 2 && t[2 * 3 + 1] == 0.7f && t[2 * 3 + 2] == 0, "our clip is held at its time and weight");
+        Expect(t[4 * 3] == 1 && t[4 * 3 + 1] == 1.4f && t[4 * 3 + 2] == 0, "a slider takes our time (weight 1 if it was off)");
+        Expect(t[0] == 0.5f && t[1 * 3 + 1] == 0.25f && t[5 * 3 + 2] == 1, "layer mode keeps the game's clips");
+        c.base = true, c.baseId = 1;
+        lg::ApplyClips(c, t, 6);
+        Expect(t[0] == 0 && t[1 * 3] == 0.5f && t[3 * 3] == 0 && t[2 * 3] == 2 && t[4 * 3] == 1,
+               "base mode keeps only Base, our clips and the sliders");
+        lg::Clips none;
+        Expect(!none.On() && c.On(), "an empty clip edit is off");
+    }
+    {  // the CPU route, layer C: which worm a skinned draw is, under a moved body (the mount)
+        lg::SkinKeys k;
+        const unsigned victimKey = 0x1000, attackerKey = 0x2000;
+        const int slots[2] = {3, 7};
+        // Unposed and apart: both keys are learned.
+        float centres[2][3] = {{0, 3, 0}, {40, 3, 0}};
+        const float pv[3] = {0.2f, 3.1f, 0}, pa[3] = {40, 2.9f, 0.3f};
+        Expect(k.Resolve(victimKey, pv, centres, slots, 2, 1) == 0 && k.Resolve(attackerKey, pa, centres, slots, 2, 1) == 1,
+               "apart, the nearest worm");
+        Expect(k.Find(victimKey) >= 0 && k.Find(attackerKey) >= 0, "unambiguous draws teach the keys");
+        // The mount: the attacker drawn 8 units from the victim, its main pivot off its drawn origin by a clip lean.
+        centres[0][0] = 0, centres[0][1] = 7, centres[0][2] = 0;   // the victim, lying, raised by 4
+        centres[1][0] = 8, centres[1][1] = 9.5f, centres[1][2] = 0;  // the attacker on its belly
+        const float pa2[3] = {3.5f, 9, 0};                        // nearer the victim's centre than its own
+        const float pv2[3] = {0.5f, 7, 0};
+        Expect(k.Resolve(attackerKey, pa2, centres, slots, 2, 50) == 1, "the attacker's key holds on top of the victim");
+        Expect(k.Resolve(victimKey, pv2, centres, slots, 2, 50) == 0, "and the victim's");
+        Expect(k.Resolve(0x3000, pa2, centres, slots, 2, 50) == 0 && k.Find(0x3000) < 0,
+               "an unknown key falls back to the nearest and is not learned when two worms are close");
+        // A key far from its worm (that worm is gone, or a new match reused the address) is not trusted.
+        const float far[3] = {200, 3, 0};
+        Expect(k.Resolve(attackerKey, far, centres, slots, 2, 60) == -1, "too far from every worm: not identified");
+        k.Forget(7);
+        Expect(k.Find(attackerKey) < 0 && k.Find(victimKey) >= 0, "forgetting a slot drops only its key");
+        // A key learned for one slot and later seen unambiguously on another is moved.
+        float c2[2][3] = {{0, 3, 0}, {60, 3, 0}};
+        const float onOther[3] = {60, 3, 0};
+        Expect(k.Resolve(victimKey, onOther, c2, slots, 2, 70) == 1 && k.e[k.Find(victimKey)].slot == 7,
+               "a key re-learned on another worm moves to it");
+    }
     printf("pose_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

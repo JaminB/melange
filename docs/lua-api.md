@@ -420,7 +420,7 @@ end)
 | `wum.render.camera()` | `{pos, fwd, up, near, far, fov, overridden}` of the main camera as it is drawn (with a camera override, the override's; on a pack or Test level, after `[LevelCamera]` moved it out of the land), or `nil`. `fov` is the vertical field of view in degrees; `overridden` is `true` while a camera override is set. |
 | `wum.render.gameCamera()` | The same for the game's own camera, as it would be drawn without an override (to blend back into it), or `nil`. |
 | `wum.render.cameraOverride(spec)` | Draws the frame from a camera of the mod's choosing; `nil` clears it. See [Camera override](#camera-override). |
-| `wum.render.wormPose(slot, spec)`, `wum.render.wormCopy(slot, spec)`, `wum.render.wormBones(slot)`, `wum.render.wormPoseStatus()` | Render-only worm poses, a severed-head copy and the posed bone positions (Melange 0.16). See [Worm poses](#worm-poses). |
+| `wum.render.wormPose(slot, spec)`, `wum.render.wormCopy(slot, spec)`, `wum.render.wormBones(slot)`, `wum.render.wormPoseStatus()`, `wum.render.wormPoseCaps()` | Render-only worm poses (the body laid down or carried, held animation clips and pose sliders, hands, a neck stump), a severed-head copy and the posed bone positions (Melange 0.16). See [Worm poses](#worm-poses). |
 | `wum.render.hideHud(frames)` | Leaves the engine's own HUD (worm names and energy, the team bars, the turn timer, the wind) out of the picture for this frame and the `frames - 1` after it (an integer, 1 to 600), for a cut-scene; call it every frame while it should last. Mods' `hud` draws and the Final post-FX still show. Several mods may hide it at once. `hideHud()`, `hideHud(nil)`, `hideHud(false)` or `hideHud(0)` ends this mod's hiding. Returns `true`, or `false, "unavailable"` without the `MirageNoHud` module. Render only: the game, online play and Wormsign see nothing of it. It ends when the mod unloads. (Melange 0.16) |
 | `wum.render.worldToScreen(pos)` | `x, y, depth` in window pixels, or `nil` behind the camera. |
 | `wum.render.windowSize()` | `width, height`. |
@@ -473,15 +473,24 @@ end)
 
 ### Worm poses
 
-`wum.render.wormPose(slot, spec)` redraws one worm in a pose of the mod's choosing: laid down, lifted, turned, its head
-or tail bent, its hands carried to world points, or its head flattened into a neck stump (Melange 0.16; check
-`if wum.render.wormPose then`). It changes only how the worm is drawn: its position, physics, collisions and
-everything the game and Wormsign compare stay as they are, so a pose on one machine changes nothing on another.
+`wum.render.wormPose(slot, spec)` redraws one worm in a pose of the mod's choosing: laid down on its back, carried
+onto another worm and leaning over it, holding a clip of the game's own animations, looking or reaching with the
+game's pose sliders, its head or tail bent, its hands carried to world points, or its head flattened into a neck stump
+(Melange 0.16; check `if wum.render.wormPose then`). It changes only how the worm is drawn: its position, physics,
+collisions and everything the game and Wormsign compare stay as they are, so a pose on one machine changes nothing on
+another.
 
 ```lua
 wum.render.wormPose(slot, {
-  frames    = 3,                                   -- 1..600 (default 3): lasts that many frames unless set again
-  root      = {rot = {pitch, yaw, roll}, move = {x, y, z}, pivot = {x, y, z}},  -- the whole worm
+  frames    = 3,                       -- 1..600 (default 3): lasts that many frames unless set again
+  -- the body: the drawn mesh's own transform (hats, glasses and the shadow follow it)
+  body      = {pitch = deg, roll = deg, yaw = deg | heading = deg, move = {x, y, z} | at = {x, y, z}},
+  -- the game's animation clips, by name, held at a time, and its pose sliders
+  clips     = {{name = "HoldBat", time = 0.5, weight = 2}, ...},   -- up to 8
+  clipMode  = "layer",                 -- "layer" (default: over the game's clips) or "base" (only Base and these)
+  sliders   = {HeadRotX = 1.3, RightArmRotY = 0.8, TailAngle = 1.2, ...},  -- up to 8; 0..2, 1 = neutral
+  -- the skinning palette, in world space, on top of the body and the clips
+  root      = {rot = {pitch, yaw, roll}, move = {x, y, z}, pivot = {x, y, z}},
   head      = {rot = {...}, move = {...}, pivot = {...}},
   tail      = {...},
   leftHand  = {target = {x, y, z}, rot = {...}},   -- the wrist (and the hand with it) carried to a world point
@@ -490,61 +499,88 @@ wum.render.wormPose(slot, {
 })
 ```
 
-- Every edit is optional. `rot` is degrees (`{pitch, yaw, roll}` or `{pitch =, yaw =, roll =}`); positive pitch
-  tips the worm's front (+Z) up, yaw turns +Z toward +X like the worm's facing. A turn is made about `pivot` (world),
-  then `move` (world units) is added. Default pivots: the main bone (`root`), the head bone (`head`, at the neck), the
-  first tail bone (`tail`) and the wrists (`leftHand`, `rightHand`). `target` moves the wrist pivot onto that world
-  point instead of `move`; the hand moves rigidly with it.
-- Order: the root first; each group then turns about its own pivot after the root moved it; the stump last.
-  `root = {rot = {-90, 0, 0}}` lays a worm on its back about its middle.
-- `hide = {head = "stump"}` flattens the head (the upper half of the worm, its eyes and mouth) onto the neck plane
-  across the worm's own up direction: a flat-topped stump.
-- `hide.attachments`: the head's rigid attachments (hat, moustache, glasses: separate unskinned draws). `true` or
-  `"hide"` skips their draws; `"follow"` draws them moved with the posed head (hidden anyway under a stump). An
-  attachment is a draw whose origin lies within 9 world units of the worm's unposed head bones. Without it they keep
-  their unposed place. The weapon the engine puts in the worm's hand is not covered.
-- A spec with no edits, no stump and no attachment rule (`{}` or `{frames = n}`) changes nothing drawn and only tracks
-  the bones for `wormBones`.
-- Returns `true`; `false, "busy"` when another mod poses that slot (one mod per slot); `false, "unavailable"` outside
-  a match or without MiragePose. `wum.render.wormPose(slot, nil)` clears the mod's own pose. A pose also ends when the
-  mod unloads or the match ends. Bad fields raise (a non-table `hide`, a `hide.head` other than `"stump"`, an unknown
-  `hide.attachments`, a non-table edit, `frames` out of range).
+Every field is optional, and the three layers stack in the engine's own order: the body first, then the clips, then
+the palette edits, which are made in world space on the worm as the body and clips left it.
+
+- `body` (degrees, world units) turns and moves the drawn worm about its feet, the mesh origin, which the engine draws
+  3 units above the worm's position. `pitch` is a lean in the worm's own frame after its heading: positive tips it
+  forward onto its face, `-90` lays it on its back with its head behind it. `roll` turns it about its forward axis
+  (`90` lies it on its side; combined with a pitch the order is inferred, so keep to pitch and heading for a reliable
+  pose). `yaw` is added to the drawn yaw; `heading` replaces it (`0` faces +Z, `90` faces +X, as `worms()[i].yaw` in
+  radians). `move` is added to the drawn origin; `at` puts the worm's position there instead (same coordinates as
+  `worms()[i].pos`). Name tags and health bars stay at the worm's real position: hide them with `wum.render.hideHud`.
+- `clips` holds each clip at `time` seconds (it does not play on; advance `time` yourself to animate it) with
+  `weight` 0..5 (default 1; 1..3 reads best, more exaggerates some channels). `"layer"` blends them over everything the
+  game is playing; `"base"` keeps only the `Base` clip and these (the sliders go back to neutral unless set). The clip
+  library is the worm's own (about 330 clips: `HoldBat`, `Fire2Bat`, `Cower`, `Terror`, `ClutchChest`...); the
+  `Recover*`, `Blastflight*`, `Nailed` and `Squish` clips carry root motion and move the whole worm far off its feet.
+- `sliders` sets the time of the game's procedural pose clips (`HeadRotX`, `HeadRotY`, `LeftArmRotX`, `LeftArmRotY`,
+  `RightArmRotX`, `RightArmRotY`, `TailAngle`, `TailLag`, `TipAngle`, `Eyes_LR`, `Eyes_UD`, `Teeth`), clamped to 0..2,
+  1 neutral. Clip and slider names are case-insensitive. An unknown name answers `false, "no clip <name>"`. Before the
+  worm has been drawn in the match its library is not known yet, and its clips and sliders are left out for that call.
+- The palette edits: `rot` is degrees (`{pitch, yaw, roll}` or `{pitch =, yaw =, roll =}`); here positive pitch tips
+  the worm's front (+Z) up and yaw turns +Z toward +X. A turn is made about `pivot` (world), then `move` (world units)
+  is added. Default pivots: the main bone (`root`), the head bone (`head`, at the neck), the first tail bone (`tail`)
+  and the wrists (`leftHand`, `rightHand`). `target` moves the wrist pivot onto that world point instead of `move`;
+  the hand moves rigidly with it. Order: the root first; each group then turns about its own pivot after the root
+  moved it; the stump last. Prefer `body` for laying a worm down: a palette `root` turn leaves its hat and shadow
+  behind.
+- `hide = {head = "stump"}` flattens the head (the upper part of the worm, its eyes and mouth) onto the neck plane
+  across the worm's own up direction: a flat-topped stump. Its hat and the like are hidden with it.
+- `hide.attachments`: the head's accessories (hat, moustache, glasses). `true` or `"hide"` hides them; `"follow"`
+  keeps them on the head (they always follow `body`, `clips` and `sliders`; on a build that skins on the GPU they also
+  follow a palette `head` or `root` edit). The weapon the engine puts in the worm's hand keeps its place under palette
+  edits: give a posed tool an invisible held mesh and draw it yourself with `wum.draw.mesh` at the `wormBones` wrists.
+- A spec with no edits (`{}` or `{frames = n}`) changes nothing drawn and only tracks the bones for `wormBones`.
+- Returns `true`; `false, "busy"` when another mod poses that slot (one mod per slot); `false, "no clip <name>"`;
+  `false, "unavailable"` outside a match or without MiragePose. `wum.render.wormPose(slot, nil)` clears the mod's own
+  pose. A pose also ends when the mod unloads or the match ends. Bad fields raise (a non-table `body`, `hide`, `clips`
+  or edit, `yaw` with `heading`, `move` with `at`, a non-number angle, slider or clip field, a clip without a `name`,
+  a `clipMode` other than `"layer"` or `"base"`, more than 8 clips or sliders, a `hide.head` other than `"stump"`, an
+  unknown `hide.attachments`, `frames` out of range).
 
 `wum.render.wormCopy(slot, {pos = {x, y, z}[, rot = {pitch, yaw, roll}][, frames = n]})` draws the worm a second time
 as its severed head: the real head mesh with its texture, skin and team colours, the neck carried to `pos` and turned
-by `rot`, the rest of the body closed over the cut. Pair it with `hide = {head = "stump"}` on the worm itself. Same
-returns and lifetime as `wormPose`; `nil` clears it. The copy is drawn only while the engine draws the worm: when a
-killed worm unspawns at the end of its throes, the head copy goes with it (use `worm:kill{throes = ...}`, up to 10 s,
-to keep it, and a client mesh for gore that must stay longer).
+by `rot` (palette convention, applied to the head as it is drawn, so a copy of a lying worm starts out lying), the rest
+of the body closed over the cut. Pair it with `hide = {head = "stump"}` on the worm itself. Same returns and lifetime
+as `wormPose`; `nil` clears it. The copy is drawn only while the engine draws the worm: when a killed worm unspawns at
+the end of its throes, the head copy goes with it (use `worm:kill{throes = ...}`, up to 10 s, to keep it, and a client
+mesh for gore that must stay longer).
 
 `wum.render.wormBones(slot)` returns the world positions of the worm's 34 bone pivots as last drawn (posed), keyed by
 bone name (`main`, `tail`, `tail2`, `tail3`, `head`, the lip, mouth, eye and brow bones, `shoulder_left`,
-`wrist_left`, the left finger bones, `shoulder_right`, `wrist_right`, the right finger bones), each `{x, y, z}`; `nil`
-when the worm was not drawn in the last two frames while posed, tracked or copied. For the unposed bones (hand targets
-for a dig), track the worm with an empty pose: `wum.render.wormPose(slot, {frames = 5})`, then read `wormBones` from
-the next frame. Use it to place a held mesh or gore on a posed worm.
+`wrist_left`, the left finger bones, `shoulder_right`, `wrist_right`, the right finger bones), plus `neck` (the point
+the stump is cut at) and `feet` (the drawn mesh origin, the pivot of a `body` turn), each `{x, y, z}`; `nil` when the
+worm was not drawn in the last two frames while posed, tracked or copied. For the unposed bones (hand targets for a
+dig), track the worm with an empty pose: `wum.render.wormPose(slot, {frames = 5})`, then read `wormBones` from the
+next frame. It reports the body and clips as drawn, so it is the way to find a lying worm's neck or chest.
 
 `wum.render.wormPoseStatus()` returns the status and the number of draws handled so far. The status is `"ok"` once a
-draw of a posed, tracked or copied worm has been identified from its read-back palette and handled (so the readback,
-the register base and the identification all work), `"untested"` while skinned worms were drawn but no posed one was
-identified yet, `"no skinned worm drawn yet"`, `"unsupported"` (the game skins worms on the CPU, or the driver lacks the
-call that reads the palette back) or `"disabled"` (`[MiragePose] Enabled=0`, or no Cg layer). Set the pose first and check a few frames later: fall back
-to client-drawn meshes when it is still not `"ok"`.
+draw of a posed, tracked or copied worm has been identified and handled, `"untested"` while skinned worms were drawn
+but no posed one was identified yet, `"no skinned worm drawn yet"`, `"unsupported"` (no palette route on this build)
+or `"disabled"` (`[MiragePose] Enabled=0`). Set the pose first and check a few frames later.
 
-**Build #1077 skins worms on the CPU**, so there every pose call answers `false, "unavailable"`, `wormBones` returns
-`nil` and the status is `"unsupported"` from the start: its GL draw action never creates the `FFVertex*Skinned`
-programs, and skinned shapes reach GL already blended. Draw a pose with your own meshes there. The route below works
-only on a build that skins on the GPU.
+`wum.render.wormPoseCaps()` returns which layers work here, as booleans: `body`, `clips`, `palette` (the palette edits,
+the stump and `wormBones`), `copy` (`wormCopy`) and `hideAttachments`. A layer whose engine code did not match is
+left out alone, and the fields for it are ignored. Pick the staging per layer: for example, with `palette` false draw
+the hands' tool in the fists, and with `body` false keep the worms upright.
 
-How it works: worms are skinned on the GPU from a 34-bone palette (`BlendMat` in `CG/FixedFunction.cg`). While a pose
-or copy is live, MiragePose reads the palette of every skinned draw, finds which worm it is (the main bone's position
-against each worm's feet, at a centre height it measures on draws where only one worm is near), draws it with the posed
-palette (and again with the head-copy palette) and puts the game's palette back. A draw is trusted only while the Cg
-skinned program's ARB program is still bound and enabled. Nothing is read once every pose has expired or the match
-ended. The weapon the engine puts in the worm's hand is a separate draw that keeps its unposed place: give a posed tool
-an invisible held mesh and draw it yourself with `wum.draw.mesh` at the `wormBones` wrists.
-`pose.test <slot> prone|stump|mount|copy|off` (Automation) poses a worm for 250 frames (about 4 s at 60 fps) for
-screenshots; `[MiragePose] Log=1` logs the palette registers it found.
+How it works. Build #1077 skins worms on the CPU. MiragePose works at three points of the engine's frame:
+
+- `body`: after each worm's graphic update, the worm mesh's position and rotation are written again for the frame
+  (the next update writes the game's own back). The accessories are hidden the same way, and shown again as the
+  game's own accessory masks say.
+- `clips` and `sliders`: around the evaluation of the worm's animation, its table of clip weights and times is
+  changed for the call and put back. The game's own clip choices and animation events are not touched.
+- the palette: around the draw of each skinned shape of a posed worm, its 34 bone matrices are replaced by the posed
+  ones for the call (and once more for the head copy), then put back. Which worm a shape is comes from its bones,
+  learned while the worms stand apart, so a worm lying on another is still told apart.
+
+On a build that skins on the GPU, the palette is read back from the `BlendMat` registers of the
+`FFVertex*Skinned` programs instead, and a head accessory is a draw whose origin lies within 9 units of the head.
+Nothing is changed once every pose has expired or the match ended.
+`pose.test <slot> prone|stump|mount|copy|lie|ride <slot>|clip <name> <time> <weight>|probe|off` (Automation) poses a
+worm for 250 frames (about 4 s at 60 fps) for screenshots; `[MiragePose] Log=1` logs what it found.
 
 ## `wum.postfx`
 

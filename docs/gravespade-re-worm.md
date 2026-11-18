@@ -16,11 +16,13 @@ The notes propose an API and a hook plan. (a) and (b) shipped in 0.16.0 as writt
 > loader `0x78ec80` skips an empty name, so the 64-entry vertex table never holds a skinned program, and skinned
 > shapes reach GL already blended through the plain `FFVertexMain*` programs. The `BlendMat` palette is never
 > uploaded, so there is nothing to patch. The earlier inference from Sunstone (**[I]** below) was wrong.
-> MiragePose now checks for that override at install. When it finds it, it hooks nothing and answers "unsupported".
-> The Grave Spade uses the fallback: client meshes, with the worms anchored upright. A real pose on this build would
-> need the CPU skinning path: where the per-instance joint matrices are blended into the vertex stream, inside the
-> XOM scene traversal of `XOglDrawAction` (slot 19 `0x78e8d0` walks the shape's children with a matrix stack). That
-> is an open research task.
+> MiragePose now checks for that override at install. When it finds it, it uses the CPU route instead
+> ([gravespade-re-pose-cpu-skin.md](gravespade-re-pose-cpu-skin.md), implemented in 0.16): the palette at the
+> engine's XSkinShape draw, plus the mesh transform and the clip table ([gravespade-re-pose-anim.md](gravespade-re-pose-anim.md)).
+> The Grave Spade now stages the mount through it; the upright staging with client meshes stays as its fallback.
+> (Before the CPU route this note read: a real pose on this build would need the CPU skinning path, where the
+> per-instance joint matrices are blended into the vertex stream, inside the XOM scene traversal of `XOglDrawAction`;
+> slot 19 `0x78e8d0` walks the shape's children with a matrix stack.)
 
 Everything refers to build #1077 (`WormsMayhem.exe`, Steam/GOG). Decompiles are `re/out/decomp/decomp_<chunk>.c` in the private research checkout. Message-object names were resolved by scanning the static initialisers `push "<name>"; mov ecx, <obj>; call 0x68bb9f` (2082 objects).
 

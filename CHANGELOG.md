@@ -17,9 +17,12 @@ for sim mods, and render-only worm poses for client mods. Every sim effect is de
   hear press, release, strike, hit and done, `reach()` (worms only) and `strike()`, and cancel or override a hit
   (`level` knocks back along the ground).
   Hooks are on only in matches with a claim; hashed as `melange.melee`.
-- `wum.render.wormPose`, `wormCopy`, `wormBones`, `wormPoseStatus`: lay a worm down, mount, bend, move its hands, cut
-  its head to a stump, hide or carry its hat, and draw the severed head, by patching the skinning palette per draw.
-  Build #1077 skins on the CPU, so there they answer "unsupported" and mods use their own meshes.
+- `wum.render.wormPose`, `wormCopy`, `wormBones`, `wormPoseStatus`, `wormPoseCaps`: render-only worm poses. Lay a
+  worm on its back or carry it onto another (`body`: the drawn mesh's transform, so the hat and the shadow follow),
+  hold the game's own animation clips and pose sliders (`clips`, `sliders`), bend it and put its hands on world
+  points (the skinning palette), cut its head to a stump with the hat hidden, and draw the severed head. Build #1077
+  skins worms on the CPU: the palette is patched around the engine's own skinned-shape draw, and `wormBones` reports
+  the posed bones there.
 - `wum.render.hideHud(frames)`: leave the engine's HUD (names, energy, team bars, timer, wind) out of the picture for
   a cut-scene; mods' HUD draws stay.
 - `wum.game.worms()` entries carry `aim` (the aim pitch).

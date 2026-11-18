@@ -1399,7 +1399,125 @@ void HideField(lua_State* L, int t, mirage::pose::logic::Spec* spec) {
     lua_pop(L, 2);
 }
 
-// wum.render.wormPose(slot, {frames=, root=, head=, tail=, leftHand=, rightHand=, hide={head=, attachments=}})
+// A number field, or nil -> false. Raises on a non-number.
+bool OptNum(lua_State* L, int t, const char* name, float* out, const char* what) {
+    const int ty = lua_getfield(L, t, name);
+    if (ty == LUA_TNIL) {
+        lua_pop(L, 1);
+        return false;
+    }
+    if (ty != LUA_TNUMBER) luaL_error(L, "wormPose: %s.%s must be a number", what, name);
+    *out = static_cast<float>(lua_tonumber(L, -1));
+    lua_pop(L, 1);
+    return true;
+}
+
+// body = {pitch=, roll=, yaw= | heading=, move={x,y,z} | at={x,y,z}} (degrees; the drawn mesh's transform)
+void BodyField(lua_State* L, int t, mirage::pose::logic::Body* b) {
+    const int ty = lua_getfield(L, t, "body");
+    if (ty == LUA_TNIL) {
+        lua_pop(L, 1);
+        return;
+    }
+    if (ty != LUA_TTABLE) luaL_error(L, "wormPose: body must be a table {pitch=, roll=, yaw= | heading=, move= | at=}");
+    const int bt = lua_absindex(L, -1);
+    b->on = true;
+    float h = 0;
+    const bool p = OptNum(L, bt, "pitch", &b->pitch, "body"), r = OptNum(L, bt, "roll", &b->roll, "body");
+    const bool y = OptNum(L, bt, "yaw", &b->yaw, "body");
+    if (OptNum(L, bt, "heading", &h, "body")) {
+        if (y) luaL_error(L, "wormPose: body takes yaw (a delta) or heading (absolute), not both");
+        b->yaw = h;
+        b->absHeading = true;
+    }
+    b->turn = p || r || y || b->absHeading;
+    const bool mv = OptVec(L, bt, "move", b->move);
+    float at[3];
+    if (OptVec(L, bt, "at", at)) {
+        if (mv) luaL_error(L, "wormPose: body takes move (a delta) or at (absolute), not both");
+        std::memcpy(b->move, at, sizeof at);
+        b->absAt = true;
+    }
+    lua_pop(L, 1);
+}
+
+// clips = {{name=, time=, weight=}, ...}, clipMode = "layer" | "base", sliders = {HeadRotX = t, ...}. Returns false and
+// pushes the reason (the second return of wormPose) for an unknown clip name.
+bool ClipsField(lua_State* L, int t, int slot, mirage::pose::logic::Clips* c) {
+    namespace lg = mirage::pose::logic;
+    const int ct = lua_getfield(L, t, "clips");
+    const int mt = lua_getfield(L, t, "clipMode");
+    const int st = lua_getfield(L, t, "sliders");
+    if (ct != LUA_TNIL && ct != LUA_TTABLE) luaL_error(L, "wormPose: clips must be a list of {name=, time=, weight=}");
+    if (mt != LUA_TNIL && mt != LUA_TSTRING) luaL_error(L, "wormPose: clipMode must be \"layer\" or \"base\"");
+    if (st != LUA_TNIL && st != LUA_TTABLE) luaL_error(L, "wormPose: sliders must be a table {HeadRotX = t, ...}");
+    const int ci = lua_absindex(L, -3), mi = lua_absindex(L, -2), si = lua_absindex(L, -1);
+    if (mt == LUA_TSTRING) {
+        const char* m = lua_tostring(L, mi);
+        if (!strcmp(m, "base")) c->base = true;
+        else if (strcmp(m, "layer") != 0) luaL_error(L, "wormPose: clipMode must be \"layer\" or \"base\"");
+    }
+    auto id = [&](const char* name) { return mirage::pose::ClipId(slot, name); };
+    if (ct == LUA_TTABLE) {
+        const lua_Integer n = luaL_len(L, ci);
+        if (n > lg::Clips::kMax) luaL_error(L, "wormPose: at most %d clips", lg::Clips::kMax);
+        for (lua_Integer k = 1; k <= n; ++k) {
+            if (lua_rawgeti(L, ci, k) != LUA_TTABLE) luaL_error(L, "wormPose: clips[%d] must be {name=, time=, weight=}", (int)k);
+            const int e = lua_absindex(L, -1);
+            if (lua_getfield(L, e, "name") != LUA_TSTRING) luaL_error(L, "wormPose: clips[%d].name must be a string", (int)k);
+            const std::string name = lua_tostring(L, -1);
+            lua_pop(L, 1);
+            float time = 0, weight = 1;
+            OptNum(L, e, "time", &time, "clips[]");
+            OptNum(L, e, "weight", &weight, "clips[]");
+            lua_pop(L, 1);
+            const int i = id(name.c_str());
+            if (i == -1) {
+                lua_pop(L, 3);
+                lua_pushboolean(L, 0);
+                lua_pushfstring(L, "no clip %s", name.c_str());
+                return false;
+            }
+            if (i < 0) continue;
+            c->id[c->n] = static_cast<short>(i);
+            c->time[c->n] = lg::ClampTime(time);
+            c->weight[c->n] = lg::ClampWeight(weight);
+            ++c->n;
+        }
+    }
+    if (st == LUA_TTABLE) {
+        lua_pushnil(L);
+        while (lua_next(L, si)) {
+            if (lua_type(L, -2) != LUA_TSTRING || lua_type(L, -1) != LUA_TNUMBER)
+                luaL_error(L, "wormPose: sliders must map clip names to numbers (0..2, 1 = neutral)");
+            const std::string name = lua_tostring(L, -2);
+            const float v = static_cast<float>(lua_tonumber(L, -1));
+            lua_pop(L, 1);
+            if (c->sn >= lg::Clips::kSliders) luaL_error(L, "wormPose: at most %d sliders", lg::Clips::kSliders);
+            const int i = id(name.c_str());
+            if (i == -1) {
+                lua_pop(L, 4);
+                lua_pushboolean(L, 0);
+                lua_pushfstring(L, "no clip %s", name.c_str());
+                return false;
+            }
+            if (i < 0) continue;
+            c->sid[c->sn] = static_cast<short>(i);
+            c->st[c->sn] = lg::ClampSlider(v);
+            ++c->sn;
+        }
+    }
+    if (c->base) {
+        const int b = id("Base");
+        if (b >= 0) c->baseId = static_cast<short>(b);
+        else c->base = false;  // the library is not known yet (or has no Base): keep the game's weights this frame
+    }
+    lua_pop(L, 3);
+    return true;
+}
+
+// wum.render.wormPose(slot, {frames=, body=, clips=, clipMode=, sliders=, root=, head=, tail=, leftHand=, rightHand=,
+//                            hide={head=, attachments=}})
 // wum.render.wormPose(slot, {}) or {frames = n} only tracks the bones; wum.render.wormPose(slot, nil) clears.
 int WormPose(lua_State* L) {
     ModRec* m = Current();
@@ -1416,8 +1534,12 @@ int WormPose(lua_State* L) {
     EditField(L, 2, "root", &spec.root);
     for (int i = 0; i < lg::kGroups; ++i) EditField(L, 2, lg::kGroupNames[i], &spec.group[i]);
     HideField(L, 2, &spec);
+    lg::Body body;
+    BodyField(L, 2, &body);
+    lg::Clips clips;
+    if (!ClipsField(L, 2, slot, &clips)) return 2;
     const int frames = PoseFrames(L, 2);
-    const auto r = mirage::pose::Set(m, slot, spec, frames);
+    const auto r = mirage::pose::Set(m, slot, spec, &body, &clips, frames);
     if (r == mirage::pose::Result::Ok) QueuePoseCleanup(m, g);
     return PoseResult(L, r);
 }
@@ -1444,20 +1566,24 @@ int WormCopy(lua_State* L) {
     return PoseResult(L, r);
 }
 
-// wum.render.wormBones(slot) -> {main={x,y,z}, head=..., wrist_right=..., neck=...} as last drawn (posed), or nil.
+// wum.render.wormBones(slot) -> {main={x,y,z}, head=..., wrist_right=..., neck=..., feet=...} as last drawn (posed), or nil.
 int WormBones(lua_State* L) {
     const int slot = PoseSlot(L);
     namespace lg = mirage::pose::logic;
-    float b[lg::kBones][3];
-    if (!mirage::pose::Bones(slot, b)) {
+    float b[lg::kBones][3], neck[3], feet[3];
+    if (!mirage::pose::Bones(slot, b, neck, feet)) {
         lua_pushnil(L);
         return 1;
     }
-    lua_createtable(L, 0, lg::kBones);
+    lua_createtable(L, 0, lg::kBones + 2);
     for (int i = 0; i < lg::kBones; ++i) {
         PushVec(L, b[i]);
         lua_setfield(L, -2, lg::kBoneNames[i]);
     }
+    PushVec(L, neck);
+    lua_setfield(L, -2, "neck");
+    PushVec(L, feet);
+    lua_setfield(L, -2, "feet");
     return 1;
 }
 
@@ -1497,6 +1623,23 @@ int WormPoseStatus(lua_State* L) {
     return 2;
 }
 
+// wum.render.wormPoseCaps() -> {body=, clips=, palette=, copy=, hideAttachments=} (booleans): which pose layers work.
+int WormPoseCaps(lua_State* L) {
+    const mirage::pose::Caps c = mirage::pose::Capabilities();
+    lua_createtable(L, 0, 5);
+    lua_pushboolean(L, c.body);
+    lua_setfield(L, -2, "body");
+    lua_pushboolean(L, c.clips);
+    lua_setfield(L, -2, "clips");
+    lua_pushboolean(L, c.palette);
+    lua_setfield(L, -2, "palette");
+    lua_pushboolean(L, c.copy);
+    lua_setfield(L, -2, "copy");
+    lua_pushboolean(L, c.hideAttachments);
+    lua_setfield(L, -2, "hideAttachments");
+    return 1;
+}
+
 void Shared(lua_State* L, int wum) {
     static const luaL_Reg kDraw[] = {{"line", Line},       {"box", Box},         {"sphere", Sphere},     {"axes", Axes},
                                      {"quad", Quad},       {"text", Text},       {"hudLine", HudLine},   {"hudRect", HudRect},
@@ -1510,7 +1653,8 @@ void Shared(lua_State* L, int wum) {
                                        {"timing", Timing}, {"cameraOverride", CameraOverride},
                                        {"gameCamera", GameCamera}, {"wormPose", WormPose},
                                        {"wormCopy", WormCopy}, {"wormBones", WormBones},
-                                       {"wormPoseStatus", WormPoseStatus}, {"hideHud", HideHud}, {nullptr, nullptr}};
+                                       {"wormPoseStatus", WormPoseStatus}, {"wormPoseCaps", WormPoseCaps},
+                                       {"hideHud", HideHud}, {nullptr, nullptr}};
     static const luaL_Reg kPostfx[] = {{"list", PfxList}, {"enable", PfxEnable}, {"setParam", PfxSetParam},
                                        {"setTransient", PfxSetTransient}, {"getParam", PfxGetParam}, {nullptr, nullptr}};
     lua_newtable(L);
