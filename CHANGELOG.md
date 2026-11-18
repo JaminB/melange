@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.16.0
+
+Tools for a digging, executing melee weapon (the Kindjal Grave Spade): land removal, scripted kills and melee control
+for sim mods, and render-only worm poses for client mods. Every sim effect is deterministic and hashed by Wormsign.
+
+### Added
+
+- `wum.sim.carve(x, y, z, radius)` and `wum.sim.carveLine(...)`: remove land without an explosion (no damage, no
+  impulse, no camera hold); water, PERM frames and indestructible levels are never carved. Budgeted per tick and turn
+  (`[LandCarve]`), hashed as `melange.land`. The client hears every land change as `Land.NewShape` `{radius, pos}`.
+- `worm:kill{explode, grave, throes}`: the engine's own death at once, without the turn-end queue; `sim.wormKilled`
+  when the worm unspawns. `worm:aim()`: the aim pitch and direction. Hashed as `melange.wormkill`.
+- `wum.sim.melee`: claim a vanilla melee weapon, gate its fire into "dig" (swallowed, the turn goes on) or "strike",
+  hear press, release, strike, hit and done, and cancel or override a hit (damage, impulse, instant kill) or `strike()`
+  from the sim. Hooks are on only in matches with a claim; hashed as `melange.melee`.
+- `wum.render.wormPose`, `wormCopy`, `wormBones`, `wormPoseStatus`: lay a worm down, mount, bend, move its hands, cut
+  its head to a stump and draw the severed head, by patching the skinning palette per draw (MiragePose).
+- `wum.game.worms()` entries carry `aim` (the aim pitch).
+
 ## 0.15.0
 
 Erg: spawn areas dealt per match, map packs that pin their time of day and name

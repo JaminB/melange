@@ -6,7 +6,9 @@ client script can use. The offline self-test (`sandbox_selftest`) fails if a `wu
 Sim scripts (`entry.sim`) run in the game's own Lua 5.0 match VM and have a different API (`wum.sim.*`); they are not covered here. They are documented in the [developer guide](developer-guide.md#sim-scripts), including the Melange 0.11
 additions `wum.sim.worm(slot)` (worm state and the anchor), `wum.sim.worms()`, `wum.sim.land()` and the turn-start hold
 `wum.sim.holdTurn(ticks)`, `wum.sim.releaseTurn()` and `wum.sim.turnHold()`, and the turn and round counters
-`wum.sim.turn()` and `wum.sim.round()` and the rising-water helper `wum.sim.waterSchedule{...}`. A client mod sees a hold through the events
+`wum.sim.turn()` and `wum.sim.round()` and the rising-water helper `wum.sim.waterSchedule{...}`, and the Melange 0.16
+additions `wum.sim.carve`/`carveLine` (removing land), `worm:kill{...}` and `worm:aim()`, and `wum.sim.melee` (melee
+weapons as tools, hit events and overrides). A client mod sees a hold through the events
 `melange.turnHold` and `melange.turnHoldEnd` below.
 
 ## The environment
@@ -74,7 +76,8 @@ Events are delivered at the next frame, in mod load order, then subscription ord
 
 Names:
 - **Engine messages** by name, for example `GameLogic.Turn.Started` or `Weapon.Fired`. The payload table holds the decoded
-  message fields (vectors are `{x, y, z}` arrays); messages without a decoder give an empty table.
+  message fields (vectors are `{x, y, z}` arrays); messages without a decoder give an empty table. `Land.NewShape`
+  (Melange 0.16) gives `{radius, pos}` for every change to the land, explosions and `wum.sim.carve` alike.
 - **Melange events:**
   - `melange.frame` `{frame}`: every frame.
   - `melange.scene` `{scene}`: `boot`, `menu`, `loading` or `match`.
@@ -150,7 +153,7 @@ Read-only game state.
 | `wum.game.turn()` | `{index, team, worm, ai, mine, phase}`: `index` = turns started in this match, counted from 1 as `sim.turnStarted`'s `turn` is (before Melange 0.13 a first turn that started in the frame the match's VM appeared was missed, so `index` ran one behind for the whole match); `team` = the current team's index and `worm` = the active worm's index, both absent between turns; `ai` = the current team is computer-controlled; `mine` = the current turn is played on this machine (online: the turn owner's player is local, kept across the gap between turns; offline: the team is local and not AI); `phase` = `"intro"` (the hot-seat timer), `"play"`, `"retreat"`, `"settle"` or `"none"`. The fields after `index` are Melange 0.12. |
 | `wum.game.ui()` | `{weaponPanel, pause, readyIntro, feCursor, attract}` booleans: the weapon panel is open, a pause menu or popup is up, the "Ready?" turn intro shows, the frontend's own menu cursor is active, the attract demo runs. `nil` on an unrecognised build. Changes are also sent as `melange.ui`. (Melange 0.12) |
 | `wum.game.tick()` | Simulation ticks (50 per second) since the match started, when the sim bridge is running; otherwise 0. |
-| `wum.game.worms()` | The worms of the current match, an array of `{slot, team, name, health, alive, pos={x,y,z}, vel={x,y,z}, yaw, weapon}` (`vel` is the engine's own velocity in world units per second: the game keeps it per millisecond of game time and Melange multiplies by 1000; it is the worm's physics velocity, so it is about zero while the worm stands or walks and large while it flies, falls or is knocked back; `weapon` is the weapon id, absent when none; `yaw` is the facing angle in radians about +Y, the facing direction is `(sin yaw, 0, cos yaw)`, it is not wrapped to a range and it spins while a worm is thrown). Empty outside a match; `nil, "unavailable"` on an unrecognised game build or with `[GameState] Enabled=0`. |
+| `wum.game.worms()` | The worms of the current match, an array of `{slot, team, name, health, alive, pos={x,y,z}, vel={x,y,z}, yaw, weapon}` (`vel` is the engine's own velocity in world units per second: the game keeps it per millisecond of game time and Melange multiplies by 1000; it is the worm's physics velocity, so it is about zero while the worm stands or walks and large while it flies, falls or is knocked back; `weapon` is the weapon id, absent when none; `yaw` is the facing angle in radians about +Y, the facing direction is `(sin yaw, 0, cos yaw)`, it is not wrapped to a range and it spins while a worm is thrown; `aim` (Melange 0.16) is the aim pitch in radians, the angle an aimed weapon fires at). Empty outside a match; `nil, "unavailable"` on an unrecognised game build or with `[GameState] Enabled=0`. |
 | `wum.game.teams()` | The teams of the current match, an array of `{slot, name, active, ai, local}`; empty outside a match, `nil, "unavailable"` as above. |
 | `wum.game.activeWorm()` | The slot of the worm whose turn it is, or `nil`. |
 | `wum.game.theme()` | The level theme of the current match as the game names it (for example `"SPACE"`), or `nil` outside a match. |
@@ -417,6 +420,7 @@ end)
 | `wum.render.camera()` | `{pos, fwd, up, near, far, fov, overridden}` of the main camera as it is drawn (with a camera override, the override's; on a pack or Test level, after `[LevelCamera]` moved it out of the land), or `nil`. `fov` is the vertical field of view in degrees; `overridden` is `true` while a camera override is set. |
 | `wum.render.gameCamera()` | The same for the game's own camera, as it would be drawn without an override (to blend back into it), or `nil`. |
 | `wum.render.cameraOverride(spec)` | Draws the frame from a camera of the mod's choosing; `nil` clears it. See [Camera override](#camera-override). |
+| `wum.render.wormPose(slot, spec)`, `wum.render.wormCopy(slot, spec)`, `wum.render.wormBones(slot)`, `wum.render.wormPoseStatus()` | Render-only worm poses, a severed-head copy and the posed bone positions (Melange 0.16). See [Worm poses](#worm-poses). |
 | `wum.render.worldToScreen(pos)` | `x, y, depth` in window pixels, or `nil` behind the camera. |
 | `wum.render.windowSize()` | `width, height`. |
 | `wum.render.timing()` | `{busyMsP50, busyMsP95, frameMsP50, fps, frames, gpuMs}`. `gpuMs` (where the GPU timers are supported): the GPU time of the last timed frame, ms: `frame` (the whole swap-to-swap command stream), `world`, `worldLate`, `postWorld`, `hud`, `final` (each present once read). fps can be CPU-bound (testenv B: near 36 whatever is drawn), so compare `gpuMs.frame` for a graphics cost. |
@@ -465,6 +469,61 @@ wum.events.on("melange.frame", function()
   end
 end)
 ```
+
+### Worm poses
+
+`wum.render.wormPose(slot, spec)` redraws one worm in a pose of the mod's choosing: laid down, lifted, turned, its head
+or tail bent, its hands carried to world points, or its head flattened into a neck stump (Melange 0.16; check
+`if wum.render.wormPose then`). It changes only how the worm is drawn: its position, physics, collisions and
+everything the game and Wormsign compare stay as they are, so a pose on one machine changes nothing on another.
+
+```lua
+wum.render.wormPose(slot, {
+  frames    = 3,                                   -- 1..600 (default 3): lasts that many frames unless set again
+  root      = {rot = {pitch, yaw, roll}, move = {x, y, z}, pivot = {x, y, z}},  -- the whole worm
+  head      = {rot = {...}, move = {...}, pivot = {...}},
+  tail      = {...},
+  leftHand  = {target = {x, y, z}, rot = {...}},   -- the wrist (and the hand with it) carried to a world point
+  rightHand = {...},
+  hide      = {head = "stump"},                    -- flatten the head into the neck
+})
+```
+
+- Every edit is optional. `rot` is degrees (`{pitch, yaw, roll}` or `{pitch =, yaw =, roll =}`); positive pitch
+  tips the worm's front (+Z) up, yaw turns +Z toward +X like the worm's facing. A turn is made about `pivot` (world),
+  then `move` (world units) is added. Default pivots: the main bone (`root`), the head bone (`head`, at the neck), the
+  first tail bone (`tail`) and the wrists (`leftHand`, `rightHand`). `target` moves the wrist pivot onto that world
+  point instead of `move`; the hand moves rigidly with it.
+- Order: the root first; each group then turns about its own pivot after the root moved it; the stump last.
+  `root = {rot = {-90, 0, 0}}` lays a worm on its back about its middle.
+- `hide = {head = "stump"}` flattens the head (the upper half of the worm, its eyes and mouth) onto the neck plane
+  across the worm's own up direction: a flat-topped stump.
+- Returns `true`; `false, "busy"` when another mod poses that slot (one mod per slot); `false, "unavailable"` outside
+  a match or without MiragePose. `wum.render.wormPose(slot, nil)` clears the mod's own pose. A pose also ends when the
+  mod unloads. Bad fields raise.
+
+`wum.render.wormCopy(slot, {pos = {x, y, z}[, rot = {pitch, yaw, roll}][, frames = n]})` draws the worm a second time
+as its severed head: the real head mesh with its texture, skin and team colours, the neck carried to `pos` and turned
+by `rot`, the rest of the body closed over the cut. Pair it with `hide = {head = "stump"}` on the worm itself. Same
+returns and lifetime as `wormPose`; `nil` clears it.
+
+`wum.render.wormBones(slot)` returns the world positions of the worm's 34 bone pivots as last drawn (posed), keyed by
+bone name (`main`, `tail`, `tail2`, `tail3`, `head`, the lip, mouth, eye and brow bones, `shoulder_left`,
+`wrist_left`, the left finger bones, `shoulder_right`, `wrist_right`, the right finger bones), each `{x, y, z}`; `nil`
+when the worm was not drawn in the last two frames while posed or copied. Use it to place a held mesh or gore on a
+posed worm.
+
+`wum.render.wormPoseStatus()` returns `"ok"`, `"no skinned worm drawn yet"`, `"unsupported"` (the driver lacks the
+call that reads the palette back) or `"disabled"` (`[MiragePose] Enabled=0`, or no Cg layer): fall back to
+client-drawn meshes when it is not `"ok"`.
+
+How it works: worms are skinned on the GPU from a 34-bone palette (`BlendMat` in `CG/FixedFunction.cg`). While a pose
+or copy is live, MiragePose reads the palette of every skinned draw, finds which worm it is (the main bone's position
+against each worm's feet), draws it with the posed palette (and again with the head-copy palette) and puts the game's
+palette back. Rigid attachments (hats, moustaches, glasses and the weapon the engine puts in the worm's hand) are
+separate draws and keep their unposed place: give a posed tool an invisible held mesh and draw it yourself with
+`wum.draw.mesh` at the `wormBones` wrists. `pose.test <slot> prone|stump|mount|copy|off` (Automation) poses a worm
+for 5 s for screenshots; `[MiragePose] Log=1` logs the palette registers it found.
 
 ## `wum.postfx`
 

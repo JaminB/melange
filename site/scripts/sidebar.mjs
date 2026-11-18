@@ -61,6 +61,9 @@ export const GROUPS = [
 			{ slug: 'developer-guide', label: 'Developer guide' },
 			{ slug: 'capture-format', label: 'GL capture format' },
 			{ slug: 'media-helper', label: 'Media helper' },
+			{ slug: 'gravespade-re-carve', label: 'RE notes: carving land' },
+			{ slug: 'gravespade-re-worm', label: 'RE notes: kills and poses' },
+			{ slug: 'gravespade-re-input', label: 'RE notes: melee input' },
 		],
 	},
 	{
