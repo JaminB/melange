@@ -18,6 +18,18 @@
 //   teleport). Turning (Input.MoveLeft/Right on the keyboard: A and D rotate the worm in place) and aiming pass.
 //   Inputs arrive on every machine through the same path (live or NetStored replay), so swallowing them here keeps
 //   the machines in step.
+// Scripted kills (0.16, worm:kill): the engine's script-only Worm.KillNow (an IntMessage carrying the slot; every worm
+// subscribes, 0x5a5c3c) is posted from here. Its handler in 0x5adcf0 sets "waiting to die" (0x5a70e0) and calls
+// TimeToDie 0x5adbf0, which enters DeathThroes (state 7) with a 3000 ms timer at entity +0x128; the throes tick
+// 0x5aa080 then runs the death explosion 0x5a9400 and the gravestone 0x5a9310 (both thiscall(entity; container),
+// ret 4) and unspawns the worm. Three hooks, enabled only in a match that has posted a kill, apply the kill's options:
+// after TimeToDie the timer becomes throes * 20 ms, and the explosion and the grave are skipped when asked. The
+// options are sim state (set by sim scripts at the same tick everywhere) and hashed as "melange.wormkill".
+// Notes: docs/gravespade-re-worm.md.
+//
+// The input handler also runs an optional filter (simworms::SetInputFilter) before the anchor's own block: the melee
+// gate of wum.sim.melee (src/gameplay/melee.cpp) swallows the fire inputs of a dig there.
+//
 // Dying and drowning worms (states 7 and 8) are left to the engine: its drowning check reads the pinned position, so
 // a worm the water rises over (feet + Worm.Drown.HeightOffset) enters DrownFloat by itself and the pin lets go
 // (sim_worms.cpp, Repin). Verified in game on 2026-10-24: walk and jump inputs swallowed, A/D turned the worm with
@@ -48,15 +60,17 @@ namespace sw = melange::simworms;
 
 constexpr uintptr_t kWormHandles = 0x95b4a8, kWormVt = 0x8747d4;
 constexpr uintptr_t kWormUpdate = 0x5b1d60, kWormInput = 0x5ac6e0, kChangeState = 0x5aa7f0;
+constexpr uintptr_t kTimeToDie = 0x5adbf0, kDeathExplosion = 0x5a9400, kGravestone = 0x5a9310;
+constexpr uintptr_t kMsgFactory = 0x96d14c, kMsgAlloc = 0x691705, kIntMsgInit = 0x691951, kMsgPost = 0x6910e4;
 constexpr uintptr_t kXomRoot = 0x966d98, kDataGuid = 0x888288;
 constexpr uintptr_t kWeaponNames = 0x90c920;
 constexpr int kWeaponNameCount = 0x45;
 constexpr uint32_t kEntitySlot = 0x30;  // WXWormLogicEntity +0x30: the worm index (m_bWormIndexSet at +0x45)
 constexpr int kDataVector = 3;
 
-SafetyHookInline g_hUpdate, g_hInput, g_hChangeState;
-bool g_installed = false, g_hooksOn = false, g_logInputs = false;
-int g_tickHook = 0, g_contrib = 0, g_context = 0;
+SafetyHookInline g_hUpdate, g_hInput, g_hChangeState, g_hTimeToDie, g_hDeathExpl, g_hGrave;
+bool g_installed = false, g_hooksOn = false, g_logInputs = false, g_killHooksOn = false, g_killOk = false;
+int g_tickHook = 0, g_contrib = 0, g_context = 0, g_killContrib = 0, g_killTick = 0;
 uint32_t g_idsSerial = 0;
 
 // Guarded container writes: the containers live on the heap, so a plain store under SEH is enough.
@@ -118,6 +132,7 @@ public:
         melange::gamestate::detail::Copy(c + 0x38, w->pos, 12);
         melange::gamestate::detail::Copy(c + 0x50, w->vel, 12);
         w->yaw = Rd<float>(c + 0x90);
+        w->pitch = Rd<float>(c + 0xd0);
         melange::gamestate::detail::ReadCString(Rd<uintptr_t>(c + 0xb0), w->name, sizeof w->name);
         return true;
     }
@@ -134,8 +149,42 @@ public:
     bool Land(float out[6]) override {
         return ReadData("Land.MinBounds", kDataVector, out, 12) && ReadData("Land.MaxBounds", kDataVector, out + 3, 12);
     }
+    bool Kill(int slot) override;
 };
 EngineBackend g_backend;
+
+melange::bus::MsgId g_killNowId = melange::bus::kInvalidId;
+uint32_t g_killIdSerial = ~0u;
+
+bool PostInt(melange::bus::MsgId id, int32_t v) {
+    __try {
+        const uintptr_t factory = *reinterpret_cast<uintptr_t*>(kMsgFactory);
+        if (!factory) return false;
+        const uintptr_t msg = reinterpret_cast<uintptr_t(__thiscall*)(uintptr_t, uint32_t)>(kMsgAlloc)(factory, 0xc);
+        if (!msg) return false;
+        reinterpret_cast<uintptr_t(__thiscall*)(uintptr_t, uint32_t, int32_t)>(kIntMsgInit)(msg, id, v);
+        reinterpret_cast<int(__cdecl*)(uintptr_t)>(kMsgPost)(msg);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+void SetKillHooks(bool on);
+void KillTick(uint32_t, void*);
+
+bool EngineBackend::Kill(int slot) {
+    const uint32_t serial = melange::sim::MatchSerial();
+    if (serial != g_killIdSerial) {
+        g_killIdSerial = serial;
+        g_killNowId = melange::bus::IdOf("Worm.KillNow");
+    }
+    if (g_killNowId == melange::bus::kInvalidId || !g_hTimeToDie) return false;
+    SetKillHooks(true);
+    if (!PostInt(g_killNowId, slot)) return false;
+    if (!g_killTick) g_killTick = melange::sim::AddTickHook(&KillTick, nullptr, 11);
+    return true;
+}
 
 // ---------------------------------------------------------------- input block
 // Resolved once per match from the message registry (names the engine did not register stay unresolved).
@@ -211,6 +260,9 @@ int __stdcall HkUpdate(uintptr_t e, uint32_t t) {
 
 int __fastcall HkInput(uintptr_t e, void*, uintptr_t msg) {
     const int slot = SlotOfEntity(e);
+    if (slot >= 0 && msg) {
+        if (sw::InputFilterFn f = sw::InputFilter(); f && f(e, slot, Rd<uint16_t>(msg + 4))) return 1;
+    }
     if (slot >= 0 && msg && sw::Pinned(slot)) {
         ResolveIds();
         const uint16_t id = Rd<uint16_t>(msg + 4);
@@ -231,6 +283,31 @@ void __fastcall HkChangeState(uintptr_t e, void*, uintptr_t container, int state
     g_hChangeState.thiscall<void>(e, container, state);
 }
 
+void __fastcall HkTimeToDie(uintptr_t e, void*) {
+    g_hTimeToDie.thiscall<void>(e);
+    const int slot = SlotOfEntity(e);
+    sw::KillOpts o;
+    if (slot < 0 || !sw::KillPending(slot, &o)) return;
+    const int32_t ms = static_cast<int32_t>(o.throes * melange::wormsign::kTickMs);
+    Poke(e + 0x128, &ms, 4);
+    LOG_INFO("[worms] slot %d: scripted death, throes %d ms, explode %d, grave %d, tick %u", slot, ms, o.explode ? 1 : 0,
+             o.grave ? 1 : 0, melange::sim::Tick());
+}
+
+void __fastcall HkDeathExplosion(uintptr_t e, void*, uintptr_t container) {
+    const int slot = SlotOfEntity(e);
+    sw::KillOpts o;
+    if (slot >= 0 && sw::KillPending(slot, &o) && !o.explode) return;
+    g_hDeathExpl.thiscall<void>(e, container);
+}
+
+void __fastcall HkGravestone(uintptr_t e, void*, uintptr_t container) {
+    const int slot = SlotOfEntity(e);
+    sw::KillOpts o;
+    if (slot >= 0 && sw::KillPending(slot, &o) && !o.grave) return;
+    g_hGrave.thiscall<void>(e, container);
+}
+
 void Enable(SafetyHookInline& h, bool on, const char* what) {
     if (!h || h.enabled() == on) return;
     const bool ok = on ? h.enable().has_value() : h.disable().has_value();
@@ -247,6 +324,23 @@ void SetHooks(bool on) {
 
 void TickHook(uint32_t, void*) { sw::RepinAll(); }
 
+void SetKillHooks(bool on) {
+    if (g_killHooksOn == on) return;
+    g_killHooksOn = on;
+    Enable(g_hTimeToDie, on, "TimeToDie");
+    Enable(g_hDeathExpl, on, "death explosion");
+    Enable(g_hGrave, on, "gravestone");
+}
+
+// After the engine's Update: a killed worm that has unspawned raises sim.wormKilled. The hooks stay on for the rest
+// of the match once used.
+void KillTick(uint32_t, void*) { sw::PollKills(); }
+
+void KillContrib(melange::wormsign::Hasher& h, uint32_t, void*) {
+    uint8_t b[sw::kKillHashBytes];
+    h.Bytes(b, sw::KillHashBytes(b, sizeof b));
+}
+
 void OnContext(bool created, melange::lua50::State*, void*) {
     if (created) {
         sw::ResetMatch();
@@ -257,8 +351,10 @@ void OnContext(bool created, melange::lua50::State*, void*) {
     if (sw::AnchoredCount()) LOG_INFO("[worms] match VM closed: %d anchor(s) dropped", sw::AnchoredCount());
     sw::ResetMatch();
     SetHooks(false);
+    SetKillHooks(false);
     if (g_tickHook) melange::sim::RemoveTickHook(g_tickHook);
-    g_tickHook = 0;
+    if (g_killTick) melange::sim::RemoveTickHook(g_killTick);
+    g_tickHook = g_killTick = 0;
 }
 
 // The sim tick hook (RepinAll after the script service's Update) exists only in a match that anchored a worm, so a
@@ -303,6 +399,18 @@ bool Check() {
              // DirtBall's nail: the worm index from the entity's +0x30, then the container's +0xec
              Expect(0x5ce37b, {0x8a, 0x46, 0x30, 0x8d, 0x4c, 0x24, 0x14, 0x0f, 0xb6, 0xd0, 0x51, 0x52, 0xe8}) &&
              Expect(0x5ce38c, {0x8b, 0x88, 0xec, 0x00, 0x00, 0x00});
+        // The kill path (optional: without it worm:kill answers "unavailable"): the TimeToDie, death explosion and
+        // gravestone prologues; the throes tick's calls of both (push edi; mov byte [edi+0x124],0; call / push edi;
+        // mov ecx,esi; call); TimeToDie's timer store (mov dword [esi+0x128], 3000); message alloc, IntMessage, Post.
+        g_killOk = ok && Expect(kTimeToDie, {0x6a, 0xff, 0x68, 0xf3, 0x69, 0x7d, 0x00, 0x64, 0xa1, 0x00, 0x00, 0x00, 0x00}) &&
+                   Expect(kDeathExplosion, {0x6a, 0xff, 0x68, 0x8b, 0xf3, 0x7c, 0x00, 0x64, 0xa1, 0x00, 0x00, 0x00, 0x00}) &&
+                   Expect(kGravestone, {0x6a, 0xff, 0x68, 0x2b, 0x6b, 0x7d, 0x00, 0x64, 0xa1, 0x00, 0x00, 0x00, 0x00}) &&
+                   Expect(0x5aa0ae, {0x57, 0xc6, 0x87, 0x24, 0x01, 0x00, 0x00, 0x00, 0xe8}) &&
+                   Expect(0x5aa0bb, {0x57, 0x8b, 0xce, 0xe8}) &&
+                   Expect(0x5adcbb, {0xc7, 0x86, 0x28, 0x01, 0x00, 0x00, 0xb8, 0x0b, 0x00, 0x00}) &&
+                   Expect(kMsgAlloc, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x10}) &&
+                   Expect(kIntMsgInit, {0x55, 0x8b, 0xec, 0x51, 0x89, 0x4d, 0xfc}) &&
+                   Expect(kMsgPost, {0x55, 0x8b, 0xec, 0x51, 0x51});
         char name[64];
         bool payload = false;
         ok = ok && melange::gamestate::detail::Rtti(kWormVt, name, sizeof name, &payload) &&
@@ -329,6 +437,19 @@ public:
         g_hUpdate = safetyhook::create_inline(kWormUpdate, &HkUpdate, F::StartDisabled);
         g_hInput = safetyhook::create_inline(kWormInput, &HkInput, F::StartDisabled);
         g_hChangeState = safetyhook::create_inline(kChangeState, &HkChangeState, F::StartDisabled);
+        if (g_killOk) {
+            g_hTimeToDie = safetyhook::create_inline(kTimeToDie, &HkTimeToDie, F::StartDisabled);
+            g_hDeathExpl = safetyhook::create_inline(kDeathExplosion, &HkDeathExplosion, F::StartDisabled);
+            g_hGrave = safetyhook::create_inline(kGravestone, &HkGravestone, F::StartDisabled);
+            if (!g_hTimeToDie || !g_hDeathExpl || !g_hGrave) {
+                LOG_WARN("[worms] the kill hooks could not be created: worm:kill answers \"unavailable\"");
+                g_hTimeToDie = {};
+                g_hDeathExpl = {};
+                g_hGrave = {};
+            }
+        } else {
+            LOG_WARN("[worms] the death path differs from build #1077: worm:kill answers \"unavailable\"");
+        }
         if (!g_hUpdate || !g_hInput || !g_hChangeState) {
             LOG_ERROR("[worms] creating the worm hooks failed: WormAnchor stays inert");
             g_hUpdate = {};
@@ -341,14 +462,23 @@ public:
         if (!sw::AddSimFunctions()) LOG_WARN("[worms] could not add every wum.sim worm function");
         g_context = melange::lua50::OnContext(&OnContext, nullptr);
         g_contrib = melange::wormsign::AddContributor("melange.wormanchor", &Contrib, nullptr);
+        g_killContrib = melange::wormsign::AddContributor("melange.wormkill", &KillContrib, nullptr);
         g_installed = true;
-        LOG_INFO("[worms] installed: wum.sim.worm/worms/land, anchor hooks armed per match");
+        LOG_INFO("[worms] installed: wum.sim.worm/worms/land, anchor hooks armed per match, kill %s",
+                 g_hTimeToDie ? "ready" : "unavailable");
         return true;
     }
     void Uninstall() override {
         g_installed = false;
         SetHooks(false);
+        SetKillHooks(false);
         sw::SetBackend(nullptr);
+        if (g_killContrib) melange::wormsign::RemoveContributor(g_killContrib);
+        if (g_killTick) melange::sim::RemoveTickHook(g_killTick);
+        g_killContrib = g_killTick = 0;
+        g_hTimeToDie = {};
+        g_hDeathExpl = {};
+        g_hGrave = {};
         sw::SetAnchorObserver(nullptr, nullptr);
         if (g_context) melange::lua50::RemoveOnContext(g_context);
         if (g_tickHook) melange::sim::RemoveTickHook(g_tickHook);

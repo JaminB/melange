@@ -22,6 +22,8 @@ extern "C" {
 #include "core/log.h"
 #include "core/mem.h"
 #include "lua/engine50.h"
+#include "lua/sim/sim_land.h"
+#include "lua/sim/sim_melee.h"
 #include "lua/sim/bridge_internal.h"
 #include "lua/sim/sim_core.h"
 #include "lua/sim/sim_hash.h"
@@ -1292,6 +1294,11 @@ struct FakeWorms final : sw::Backend {
         memcpy(out, land, sizeof land);
         return true;
     }
+    std::vector<int> kills;
+    bool Kill(int slot) override {
+        kills.push_back(slot);
+        return true;
+    }
     void Step() {  // the engine's physics: velocity moves the worm
         for (auto& s : slots)
             for (int i = 0; i < 3; ++i) s.w.pos[i] += s.w.vel[i];
@@ -1657,6 +1664,8 @@ void TestTurnHold() {
     melange::turnhold::SetNotify(nullptr, nullptr);
 }
 
+#include "sim_spade_cases.inc"
+
 int main() {
     melange::log::SetTap(&Tap);
     {
@@ -1673,6 +1682,7 @@ int main() {
     melange::simbridge::AddSimFunction("holdTurn", &melange::turnhold::LHoldTurn);
     melange::simbridge::AddSimFunction("releaseTurn", &melange::turnhold::LReleaseTurn);
     melange::simbridge::AddSimFunction("turnHold", &melange::turnhold::LTurnHold);
+    melange::simland::AddSimFunctions();
     core::SetLogSink(&Sink);
     core::Config cfg;
     cfg.instrPerCall = 200000;
@@ -1724,6 +1734,7 @@ int main() {
     TestTurnsAndWater();
     TestWorms();
     TestTurnHold();
+    TestSpade();
     printf("sim_selftest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "lua/sim/bridge_internal.h"
+#include "melange/sim.h"
 
 namespace melange::simworms {
 namespace {
@@ -27,6 +28,16 @@ struct AnchorState {
     float pin[3] = {0, 0, 0};
 };
 AnchorState g_anchors[kMaxWorms];
+
+// Scripted kills: 0 none, 1 posted (pending), 2 completed (sim.wormKilled raised).
+struct KillState {
+    uint8_t stage = 0;
+    KillOpts opts;
+    uint32_t tick = 0;
+};
+KillState g_kills[kMaxWorms];
+KillFn g_killObserver = nullptr;
+void* g_killUser = nullptr;
 
 bool ValidSlot(int slot) { return slot >= 0 && slot < kMaxWorms; }
 
@@ -201,6 +212,61 @@ int __cdecl LPin(l5::State* L) {
     return Push3(L, p);
 }
 
+// worm:kill([{explode=, grave=, throes=}]) -> true | nil, reason
+int __cdecl LKill(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
+    const auto& a = l5::A();
+    KillOpts o;
+    const int t = a.type(L, 2);
+    if (t == l5::kTTable) {
+        a.pushstring(L, "explode");
+        a.rawget(L, 2);
+        const int te = a.type(L, -1);
+        if (te == l5::kTBoolean) o.explode = a.toboolean(L, -1) != 0;
+        a.settop(L, 2);
+        a.pushstring(L, "grave");
+        a.rawget(L, 2);
+        const int tg = a.type(L, -1);
+        if (tg == l5::kTBoolean) o.grave = a.toboolean(L, -1) != 0;
+        a.settop(L, 2);
+        a.pushstring(L, "throes");
+        a.rawget(L, 2);
+        const int tt = a.type(L, -1);
+        float th = 0;
+        if (tt == l5::kTNumber) th = a.tonumber(L, -1);
+        a.settop(L, 2);
+        const bool badE = te != l5::kTNil && te != l5::kTBoolean, badG = tg != l5::kTNil && tg != l5::kTBoolean;
+        const bool badT = tt != l5::kTNil && (tt != l5::kTNumber || std::floor(th) != th || th < 1 || th > kMaxThroes);
+        if (badE || badG || badT) {
+            snprintf(g_err, sizeof g_err, "worm:kill(opts): explode and grave are booleans, throes an integer 1..150");
+            return Raise(L);
+        }
+        if (tt == l5::kTNumber) o.throes = static_cast<uint32_t>(th);
+    } else if (t != l5::kTNone && t != l5::kTNil) {
+        snprintf(g_err, sizeof g_err, "worm:kill(opts): opts must be a table");
+        return Raise(L);
+    }
+    const char* why = nullptr;
+    if (!Kill(slot, o, &why)) return NilReason(L, why ? why : "failed");
+    a.pushboolean(L, 1);
+    return 1;
+}
+
+// worm:aim() -> pitch, yaw, dx, dy, dz
+int __cdecl LAim(l5::State* L) {
+    const int slot = SlotOf(L);
+    if (slot < 0) return BadSelf(L);
+    WormInfo w;
+    if (!ReadSlot(slot, &w)) return NilReason(L, "no worm");
+    float d[3];
+    AimDir(w.pitch, w.yaw, d);
+    const auto& a = l5::A();
+    a.pushnumber(L, w.pitch);
+    a.pushnumber(L, w.yaw);
+    return 2 + Push3(L, d);
+}
+
 // Pushes the shared method table (also the worm tables' metatable, __index = itself), building it on first use in
 // this VM. The registry dies with the VM, so nothing needs freeing at match end.
 void PushMethods(l5::State* L) {
@@ -215,7 +281,7 @@ void PushMethods(l5::State* L) {
     } kMethods[] = {{"pos", &LPos},       {"vel", &LVel},       {"alive", &LAlive},   {"active", &LActive},
                     {"team", &LTeam},     {"health", &LHealth}, {"state", &LState},   {"yaw", &LYaw},
                     {"weapon", &LWeapon}, {"name", &LName},     {"anchor", &LAnchor}, {"anchored", &LAnchored},
-                    {"pin", &LPin}};
+                    {"pin", &LPin},       {"kill", &LKill},     {"aim", &LAim}};
     a.newtable(L);
     const int t = a.gettop(L);
     for (const auto& m : kMethods) {
@@ -238,6 +304,12 @@ void PushMethods(l5::State* L) {
 }  // namespace
 
 void SetBackend(Backend* b) { g_backend = b; }
+
+namespace {
+InputFilterFn g_inputFilter = nullptr;
+}
+void SetInputFilter(InputFilterFn fn) { g_inputFilter = fn; }
+InputFilterFn InputFilter() { return g_inputFilter; }
 Backend* GetBackend() { return g_backend; }
 void SetAnchorObserver(AnchorFn fn, void* user) {
     g_observer = fn;
@@ -318,6 +390,84 @@ void RepinAll() {
 
 void ResetMatch() {
     for (auto& s : g_anchors) s = AnchorState{};
+    for (auto& k : g_kills) k = KillState{};
+}
+
+void AimDir(float pitch, float yaw, float out[3]) {
+    const float cp = std::cos(pitch);
+    out[0] = std::sin(yaw) * cp;
+    out[1] = std::sin(pitch);
+    out[2] = std::cos(yaw) * cp;
+}
+
+bool Kill(int slot, const KillOpts& o, const char** why) {
+    if (!ValidSlot(slot)) return *why = "no worm", false;
+    if (!g_backend) return *why = "unavailable", false;
+    WormInfo w;
+    if (!g_backend->Read(slot, &w)) return *why = "no worm", false;
+    if (w.state == kDrownFloat) return *why = "drowning", false;
+    if (!Alive(w) || g_kills[slot].stage) return *why = "dead", false;
+    KillState& k = g_kills[slot];
+    k.opts = o;
+    if (k.opts.throes < 1) k.opts.throes = 1;
+    if (k.opts.throes > kMaxThroes) k.opts.throes = kMaxThroes;
+    k.tick = sim::Tick();
+    k.stage = 1;
+    if (!g_backend->Kill(slot)) {
+        k = KillState{};
+        return *why = "unavailable", false;
+    }
+    if (g_killObserver) g_killObserver(slot, true, g_killUser);
+    return true;
+}
+
+bool KillPending(int slot, KillOpts* out) {
+    if (!ValidSlot(slot) || g_kills[slot].stage != 1) return false;
+    if (out) *out = g_kills[slot].opts;
+    return true;
+}
+
+bool AnyKillPending() {
+    for (const auto& k : g_kills)
+        if (k.stage == 1) return true;
+    return false;
+}
+
+void SetKillObserver(KillFn fn, void* user) {
+    g_killObserver = fn;
+    g_killUser = user;
+}
+
+int PollKills() {
+    int pending = 0;
+    for (int i = 0; i < kMaxWorms; ++i) {
+        KillState& k = g_kills[i];
+        if (k.stage != 1) continue;
+        WormInfo w{};
+        const bool there = g_backend && g_backend->Read(i, &w);
+        if (there && w.active) {
+            ++pending;
+            continue;
+        }
+        k.stage = 2;
+        if (g_killObserver) g_killObserver(i, false, g_killUser);
+        simbridge::Dispatch("sim.wormKilled", {static_cast<float>(i), static_cast<float>(sim::Tick())});
+    }
+    return pending;
+}
+
+size_t KillHashBytes(uint8_t* out, size_t cap) {
+    if (cap < kKillHashBytes) return 0;
+    size_t n = 0;
+    for (const auto& k : g_kills) {
+        out[n++] = k.stage;
+        out[n++] = static_cast<uint8_t>((k.opts.explode ? 1 : 0) | (k.opts.grave ? 2 : 0));
+        memcpy(out + n, &k.opts.throes, 4);
+        n += 4;
+        memcpy(out + n, &k.tick, 4);
+        n += 4;
+    }
+    return n;
 }
 
 int AnchoredCount() {
