@@ -10,6 +10,19 @@ input, how its strike finds and damages a worm, and how its turn ends. They end 
   static initialiser (3635 of them).
 - **Tags:** items marked **[verify]** still need an in-game check.
 
+> **Correction after the in-game run (r1): fire does not reach the melee entity through the worm.** With a logging
+> filter in the worm input hook `0x5ac6e0`, a human turn showed only broadcast messages there (AI.IssueWormCommand,
+> Weapon.Selected, Weapon.Delete, Worm.OverridePhysics) and no `Input.*` at all. A spade press still swung and ended
+> the turn. The disassembly shows why: `MeleeWeaponLogicEntity::Initialize 0x568860` subscribes the entity itself
+> on the message bus (`0x690e3e`) to `Weapon.Delete` (`0x568960`), `Input.FirePressed` (`0x568988`, id global
+> `0x95deac`) and `Input.FireReleased` (`0x5689b0`, `0x95deb4`). The bus delivers them straight to HandleMessage
+> `0x569930`. Section 1.1 below describes a path that the melee weapon does not use. The 0.16.0 gate therefore lives
+> in the HandleMessage hook. For a press or release that the active worm's entity (its `+0xc8` task resolves to
+> `*(0x95fb98)`) gates as a dig, the hook runs the base handler `0x68b79e` (stdcall(this, msg), `ret 8`) instead of
+> the original. That is exactly what the original does with a press it ignores, so the swing never starts. It needs
+> no previously tracked entity, so the first press after a weapon switch is covered too. `Input.FirePressed` is an
+> exact id compare (`0x68bcce`); the Joypad ids are separate messages that the entity does not subscribe to.
+
 ## 0. Summary
 
 - **No vanilla digger.** The weapon table has no drill, blowtorch or digging weapon. The only melee weapons are the

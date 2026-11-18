@@ -1,5 +1,12 @@
 // Module "MiragePose": wum.render.wormPose / wormCopy / wormBones. Notes: docs/gravespade-re-worm.md, route A.
 //
+// BUILD #1077 SKINS ON THE CPU, so this route is off there. XOglDrawAction (vtable 0x8b319c) overrides the vertex
+// program name builder (slot 60, 0x790880) to return an empty name for every index with bit 8 ("Skinned"), so the
+// FFVertex*Skinned programs of the base class (0x78eb20) are never created and skinned shapes reach GL already
+// blended, through the plain FFVertexMain* programs (in game, r1: no Skinned program in shaders.list). Install
+// checks for that override and, when it is there, hooks nothing and answers "unsupported", so a mod falls back to
+// client meshes at once. The palette code below is kept for a build that skins on the GPU.
+//
 // Worms are GPU-skinned by the Cg programs FFVertex*Skinned (CG/FixedFunction.cg): `float4x4 BlendMat[35] :
 // register(c8)`, flushed by cgGL into the bound ARB vertex program's local parameters, four registers per bone. For
 // a draw of a skinned program while a pose or copy is live, this module reads the 34-bone palette back
@@ -28,6 +35,7 @@
 
 #include "core/events.h"
 #include "core/log.h"
+#include "core/mem.h"
 #include "core/module.h"
 #include "melange/gamestate.h"
 #include "melange/sim.h"
@@ -61,6 +69,7 @@ GetL g_getLocal = nullptr;
 bool g_getTried = false;
 
 bool g_installed = false, g_log = false;
+bool g_cpuSkinned = false;  // the engine's GL draw action never creates a skinned program (see the top)
 
 // The ARB vertex program state as the game (and cgGL) set it. Each check is used only once its call was seen, so a
 // driver path that bypasses the hub degrades to the bind-only rule instead of turning poses off.
@@ -435,6 +444,7 @@ bool Bones(int slot, float out[lg::kBones][3]) {
 }
 
 const char* Status() {
+    if (g_cpuSkinned) return "unsupported";
     if (!g_installed) return "disabled";
     if (g_getTried && !g_getLocal) return "unsupported";
     if (!g_sawSkinned) return "no skinned worm drawn yet";
@@ -453,6 +463,14 @@ public:
     int Order() const override { return 44; }  // after MirageShaders (43): our GL wrappers sit in front of its mirror
     bool Install() override {
         g_log = Bool("Log", false);
+        // XOglDrawAction's slot 60 is 0x790880, whose first test is `test al, 8; je` (the Skinned bit -> empty name).
+        g_cpuSkinned = melange::mem::Expect(0x8b319c + 60 * 4, {0x80, 0x08, 0x79, 0x00}) &&
+                       melange::mem::Expect(0x790880, {0x8b, 0x44, 0x24, 0x0c, 0x56, 0x8b, 0x74, 0x24, 0x0c, 0xa8, 0x08, 0x74});
+        if (g_cpuSkinned) {
+            LOG_INFO("[pose] this build skins worms on the CPU (no skinned vertex program): wum.render.wormPose, "
+                     "wormCopy and wormBones answer \"unsupported\"; mods use client meshes");
+            return true;
+        }
         if (!shaders::CgApi().ok || !shaders::RequireBindHook() || !hub::Require(Name())) {
             LOG_WARN("[pose] the Cg layer or the GL hub is unavailable: wum.render.wormPose answers \"unavailable\"");
             return false;

@@ -29,9 +29,6 @@
 // (set by sim scripts and the engine at the same tick everywhere) and hashed as "melange.wormkill".
 // Notes: docs/gravespade-re-worm.md.
 //
-// The input handler also runs an optional filter (simworms::SetInputFilter) before the anchor's own block: the melee
-// gate of wum.sim.melee (src/gameplay/melee.cpp) swallows the fire inputs of a dig there.
-//
 // Dying and drowning worms (states 7 and 8) are left to the engine: its drowning check reads the pinned position, so
 // a worm the water rises over (feet + Worm.Drown.HeightOffset) enters DrownFloat by itself and the pin lets go
 // (sim_worms.cpp, Repin). Verified in game on 2026-10-24: walk and jump inputs swallowed, A/D turned the worm with
@@ -262,9 +259,6 @@ int __stdcall HkUpdate(uintptr_t e, uint32_t t) {
 
 int __fastcall HkInput(uintptr_t e, void*, uintptr_t msg) {
     const int slot = SlotOfEntity(e);
-    if (slot >= 0 && msg) {
-        if (sw::InputFilterFn f = sw::InputFilter(); f && f(e, slot, Rd<uint16_t>(msg + 4))) return 1;
-    }
     if (slot >= 0 && msg && sw::Pinned(slot)) {
         ResolveIds();
         const uint16_t id = Rd<uint16_t>(msg + 4);
@@ -412,7 +406,9 @@ bool Check() {
                    Expect(0x5adcbb, {0xc7, 0x86, 0x28, 0x01, 0x00, 0x00, 0xb8, 0x0b, 0x00, 0x00}) &&
                    Expect(kMsgAlloc, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x10}) &&
                    Expect(kIntMsgInit, {0x55, 0x8b, 0xec, 0x51, 0x89, 0x4d, 0xfc}) &&
-                   Expect(kMsgPost, {0x55, 0x8b, 0xec, 0x51, 0x51});
+                   // Post: the EventBus module installs first and detours it (jmp rel32), so accept that too.
+                   (*reinterpret_cast<const unsigned char*>(kMsgPost) == 0xe9 ||
+                    Expect(kMsgPost, {0x55, 0x8b, 0xec, 0x51, 0x51}));
         char name[64];
         bool payload = false;
         ok = ok && melange::gamestate::detail::Rtti(kWormVt, name, sizeof name, &payload) &&

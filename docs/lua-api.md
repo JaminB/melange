@@ -527,9 +527,14 @@ the next frame. Use it to place a held mesh or gore on a posed worm.
 `wum.render.wormPoseStatus()` returns the status and the number of draws handled so far. The status is `"ok"` once a
 draw of a posed, tracked or copied worm has been identified from its read-back palette and handled (so the readback,
 the register base and the identification all work), `"untested"` while skinned worms were drawn but no posed one was
-identified yet, `"no skinned worm drawn yet"`, `"unsupported"` (the driver lacks the call that reads the palette back)
-or `"disabled"` (`[MiragePose] Enabled=0`, or no Cg layer). Set the pose first and check a few frames later: fall back
+identified yet, `"no skinned worm drawn yet"`, `"unsupported"` (the game skins worms on the CPU, or the driver lacks the
+call that reads the palette back) or `"disabled"` (`[MiragePose] Enabled=0`, or no Cg layer). Set the pose first and check a few frames later: fall back
 to client-drawn meshes when it is still not `"ok"`.
+
+**Build #1077 skins worms on the CPU**, so there every pose call answers `false, "unavailable"`, `wormBones` returns
+`nil` and the status is `"unsupported"` from the start: its GL draw action never creates the `FFVertex*Skinned`
+programs, and skinned shapes reach GL already blended. Draw a pose with your own meshes there. The route below works
+only on a build that skins on the GPU.
 
 How it works: worms are skinned on the GPU from a 34-bone palette (`BlendMat` in `CG/FixedFunction.cg`). While a pose
 or copy is live, MiragePose reads the palette of every skinned draw, finds which worm it is (the main bone's position

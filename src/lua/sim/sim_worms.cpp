@@ -309,11 +309,6 @@ void PushMethods(l5::State* L) {
 
 void SetBackend(Backend* b) { g_backend = b; }
 
-namespace {
-InputFilterFn g_inputFilter = nullptr;
-}
-void SetInputFilter(InputFilterFn fn) { g_inputFilter = fn; }
-InputFilterFn InputFilter() { return g_inputFilter; }
 Backend* GetBackend() { return g_backend; }
 void SetAnchorObserver(AnchorFn fn, void* user) {
     g_observer = fn;

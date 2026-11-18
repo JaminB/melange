@@ -6,7 +6,21 @@ These are research notes for the Kindjal Grave Spade execution (Melange 0.16.0).
 - (b) a prone victim with the attacker mounted on it;
 - (c) a client-side pose or bone override: hands that follow a held object, a bent body, and a hidden head.
 
-The notes propose an API and a hook plan. Nothing here is implemented yet.
+The notes propose an API and a hook plan. (a) and (b) shipped in 0.16.0 as written.
+
+> **Update after the in-game run (r1): Route A is dead on build #1077. Worms are skinned on the CPU.** In game, no
+> `FFVertex*Skinned` program was ever created. The cause is static and was checked in the disassembly: the concrete GL
+> draw action `XOglDrawAction` (vtable `0x8b319c`) overrides the vertex-program name builder in slot 60 with
+> `0x790880`. That function starts with `test al, 8; je` and returns the empty name for every index with bit 8
+> ("Skinned"). The base `IXDrawActionImpl` builder `0x78eb20` (vtable `0x8b2c3c`) would append "Skinned". The program
+> loader `0x78ec80` skips an empty name, so the 64-entry vertex table never holds a skinned program, and skinned
+> shapes reach GL already blended through the plain `FFVertexMain*` programs. The `BlendMat` palette is never
+> uploaded, so there is nothing to patch. The earlier inference from Sunstone (**[I]** below) was wrong.
+> MiragePose now checks for that override at install. When it finds it, it hooks nothing and answers "unsupported".
+> The Grave Spade uses the fallback: client meshes, with the worms anchored upright. A real pose on this build would
+> need the CPU skinning path: where the per-instance joint matrices are blended into the vertex stream, inside the
+> XOM scene traversal of `XOglDrawAction` (slot 19 `0x78e8d0` walks the shape's children with a matrix stack). That
+> is an open research task.
 
 Everything refers to build #1077 (`WormsMayhem.exe`, Steam/GOG). Decompiles are `re/out/decomp/decomp_<chunk>.c` in the private research checkout. Message-object names were resolved by scanning the static initialisers `push "<name>"; mov ecx, <obj>; call 0x68bb9f` (2082 objects).
 
@@ -25,7 +39,7 @@ Confidence follows [meshes.md](meshes.md):
 |---|---|---|
 | (a) Instant kill from the sim | **Feasible today, and cleanly in 0.16.** | `Worm.KillNow` (an IntMessage carrying the slot) is a vanilla, script-only "die now" message the worm already subscribes to. 0.16 should wrap it as `worm:kill{...}`, with hooks that skip the death explosion and grave and shorten the throes. |
 | (b) Prone victim, mounted attacker | **Feasible as a visual only. No engine prone state exists.** | The sim anchors both worms (`worm:anchor`, 0.11). "Prone" and "mounted" are client pose overrides of the rendered skeleton (c). Sim positions never change, so this cannot desync. |
-| (c) Client pose or bone override | **Feasible: the GL palette patch is the primary route.** | Worms are GPU-skinned with a 34-bone world-space palette (`BlendMat[35]`) that the game uploads as ARB program-local registers. Melange already mirrors those registers and hooks `glDrawElements`. The work is: patch the palette per draw for one worm, restore it after, and optionally draw a second copy with another palette to get a severed head. Hats and the held weapon need extra handling (see [Attachments](#attachments)). |
+| (c) Client pose or bone override | **Not on build #1077 (CPU skinning, see the update above).** The GL palette patch below was the planned route. | Worms are GPU-skinned with a 34-bone world-space palette (`BlendMat[35]`) that the game uploads as ARB program-local registers. Melange already mirrors those registers and hooks `glDrawElements`. The work is: patch the palette per draw for one worm, restore it after, and optionally draw a second copy with another palette to get a severed head. Hats and the held weapon need extra handling (see [Attachments](#attachments)). |
 | Fallback | Available | Vanilla clips by name through `XMeshInstance::PlayClip` `0x6a0730` (speed scalable), plus client meshes. See the [clip list](#route-c-fallback-retimed-vanilla-clips). |
 
 ## (a) Killing a worm

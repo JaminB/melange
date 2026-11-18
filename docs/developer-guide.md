@@ -1021,8 +1021,9 @@ in mode `"dig"` the press is swallowed, in `"strike"` it goes to the engine's sw
 goes to the swing when `reach()` is true and is swallowed otherwise. A swallowed press, its repeats and its release
 never reach the weapon: no swing, no ammo, no `Timer.EndTurn`, no `Weapon.Fired`, so the turn goes on. Use the press,
 `held()` and the release to dig. A strike ends the turn the engine's way (after `PostLaunchDelay`, then the retreat
-time). The press and release reach the gate where the engine delivers the active worm's inputs, on every machine in
-the same tick (verified locally; the LocalNet A+B run with `[Melee] Log=1` is still to do). A press during a swing is
+time). The gate sits in the melee entity's own message handler: the entity subscribes itself to `Input.FirePressed`
+and `Input.FireReleased` on the message bus, so that is where the active worm's fire arrives, on every machine in the
+same tick (the LocalNet A+B run with `[Melee] Log=1` is still to do). A press during a swing is
 the engine's and is not reported. The gate decides once, at the press: in `"auto"` a held dig that reaches a worm
 stays a dig; call `strike()` from the tick handler when `held()` and `reach()` are both true.
 
@@ -1058,8 +1059,8 @@ down with an aimed weapon (the Bat), widen `MinAimAngle`/`MaxAimAngle` (f32, deg
 
 The claims, gate modes, the held press, the hit count and whether the engine side is live are the Wormsign
 contributor `melange.melee`. The hooks (the melee entity's message handler 0x569930, Update 0x569b00, Release
-0x5687d0, idle sweep 0x5683b0, the collision iterator 0x519e90 during that sweep, the per-target impact 0x567a40, and
-the gate in WormAnchor's input hook) are enabled only in a match where a mod claimed a weapon; `[Melee] Log=1` logs
+0x5687d0, idle sweep 0x5683b0, the collision iterator 0x519e90 during that sweep, and the per-target impact
+0x567a40; the gate is in the message handler) are enabled only in a match where a mod claimed a weapon; `[Melee] Log=1` logs
 each press, release and hit. The wielded entity is tracked until its Release frees it and is used only while it
 belongs to the active worm. Notes: `docs/gravespade-re-input.md`.
 

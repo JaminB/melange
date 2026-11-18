@@ -98,11 +98,6 @@ void SetKillObserver(KillFn fn, void* user);
 size_t KillHashBytes(uint8_t* out, size_t cap);
 constexpr size_t kKillHashBytes = kMaxWorms * 10;
 
-// A filter the worm input hook (0x5ac6e0) runs first for every worm message it sees: true swallows the input. Set at
-// install by the melee module (wum.sim.melee); the entity is the worm's WXWormLogicEntity.
-using InputFilterFn = bool (*)(uintptr_t entity, int slot, uint16_t msgId);
-void SetInputFilter(InputFilterFn fn);
-InputFilterFn InputFilter();
 
 // The wum.sim functions (Lua 5.0 trampolines; upvalue 1 = the mod index, unused).
 int __cdecl LWorm(lua50::State* L);

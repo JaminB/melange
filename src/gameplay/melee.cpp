@@ -3,7 +3,8 @@
 //
 // The four melee weapons (Bat, Fire Punch, Prod, No More Nails) run on MeleeWeaponLogicEntity (vtable 0x85a82c):
 // - HandleMessage 0x569930 (slot 7, stdcall(this, msg), ret 8): Input.FirePressed starts the swing when the entity is
-//   idle (state +0x50 == 0); Weapon.Delete and message 0x42 end it.
+//   idle (state +0x50 == 0); Weapon.Delete and message 0x42 end it. Every other path ends in the base handler
+//   0x68b79e (stdcall(this, msg), ret 8), which is what the original runs for a press it ignores.
 // - Update 0x569b00 (slot 6, stdcall(this, time), ret 8): the state machine. State 0 runs the idle sweep that writes
 //   Weapon.Melee.TargetInRange; state 2 waits LaunchDelay, posts Timer.EndTurn, then strikes; 8 returns to 0 after
 //   PostLaunchDelay and posts Weapon.Fired and the retreat timer.
@@ -18,9 +19,12 @@
 //   hit record u16[0x95c2a0] (0x5160e0(index), +0x14 flags, bit 0 a worm, +0x18 its task id; the task's logic entity
 //   from 0x68e4ca, its worm index at +0x30). It builds the DamageImpulseMessage from the properties container
 //   P = *(this+0x58): WormDamageMagnitude, ImpulseMagnitude, DamageIsPercentage, InstantKill.
-// The weapon only gets fire input through the active worm's input handler 0x5ac6e0 (forwarded via the worm's
-// sub-entity), so swallowing Input.FirePressed/FireReleased there (WormAnchor's hook, simworms::SetInputFilter) stops
-// the swing entirely: no ammo, no Timer.EndTurn, no Weapon.Fired. That is the dig.
+// The fire input does NOT come through the worm: Initialize 0x568860 subscribes the entity itself to Weapon.Delete,
+// Input.FirePressed and Input.FireReleased on the message bus (0x690e3e at 0x568960/0x568988/0x5689b0), so the bus
+// delivers them straight to HandleMessage (in game, r1: the worm input hook 0x5ac6e0 never saw an Input.* message).
+// The gate therefore sits in the HandleMessage hook: a dig press or release of the active worm's entity goes to the
+// base handler instead of the original, so the swing never starts: no Weapon.Wield, no ammo, no Timer.EndTurn, no
+// Weapon.Fired. It needs no tracked entity: the entity that receives the press is checked by its own worm (+0xc8).
 //
 // Every hook is created disabled and is on only in a match where a sim mod claimed a weapon, so vanilla play and
 // matches without wum.sim.melee run the engine's code untouched.
@@ -53,7 +57,7 @@ using melange::gamestate::detail::Rd;
 constexpr uintptr_t kMeleeVt = 0x85a82c, kMsg = 0x569930, kUpdate = 0x569b00, kImpact = 0x567a40;
 constexpr uintptr_t kRelease = 0x5687d0, kIdleSweep = 0x5683b0, kIterate = 0x519e90;
 constexpr uintptr_t kRecord = 0x5160e0, kTaskEntity = 0x68e4ca, kRecordIndex = 0x95c2a0, kActiveWorm = 0x95fb98;
-constexpr uintptr_t kWeaponNames = 0x90c920, kBaseMessageVt = 0x81aa14;
+constexpr uintptr_t kWeaponNames = 0x90c920, kBaseMessageVt = 0x81aa14, kBaseMsg = 0x68b79e;
 constexpr int kWeaponNameCount = 0x45;
 constexpr uint32_t kState = 0x50, kProps = 0x58, kCollider = 0xb8, kOwnTask = 0xc8;
 constexpr uint16_t kNoRecord = 0xffff;
@@ -155,24 +159,28 @@ const char* EngineMelee::Strike() {
     return nullptr;
 }
 
-// The gate: the worm input hook's filter. Only the active worm's inputs reach the weapon.
-bool Filter(uintptr_t entity, int slot, uint16_t id) {
-    if (!g_on || entity != Rd<uintptr_t>(kActiveWorm)) return false;
-    ResolveIds();
-    const bool press = IsId(g_press, id), release = !press && IsId(g_release, id);
-    if (!press && !release) return false;
+// The gate, from the HandleMessage hook: true when the press or release goes to the base handler (a dig). Only the
+// entity of the worm whose turn it is gates; any other entity (and every non-claimed weapon) passes untouched.
+bool Gate(uintptr_t self, bool press) {
+    const uintptr_t active = Rd<uintptr_t>(kActiveWorm);
+    const int slot = SlotOfEntity(active);
+    if (slot < 0 || EntityOfTask(Rd<uint32_t>(self + kOwnTask)) != active) return false;
+    g_live = self;  // it is receiving the active worm's input, so it is alive; the first press may precede Update
     const bool swallow = sm::OnFire(slot, press);
     if (g_log)
-        LOG_INFO("[melee] slot %d: %s %s, tick %u", slot, press ? "press" : "release", swallow ? "swallowed (dig)" : "passed",
-                 melange::sim::Tick());
+        LOG_INFO("[melee] slot %d: %s %s, state %u, tick %u", slot, press ? "press" : "release",
+                 swallow ? "swallowed (dig)" : "passed", Rd<uint32_t>(self + kState), melange::sim::Tick());
     return swallow;
 }
 
 uintptr_t __stdcall HkMsg(uintptr_t self, uintptr_t msg) {
-    if (msg && self == g_live) {
+    if (msg) {
         ResolveIds();
         const uint16_t id = Rd<uint16_t>(msg + 4);
-        if (id == 0x42 || (g_delete != melange::bus::kInvalidId && id == g_delete)) g_live = 0;
+        if (self == g_live && (id == 0x42 || (g_delete != melange::bus::kInvalidId && id == g_delete))) g_live = 0;
+        const bool press = IsId(g_press, id), release = !press && IsId(g_release, id);
+        if ((press || release) && Gate(self, press))
+            return reinterpret_cast<uintptr_t(__stdcall*)(uintptr_t, uintptr_t)>(kBaseMsg)(self, msg);
     }
     return g_hMsg.stdcall<uintptr_t>(self, msg);
 }
@@ -377,8 +385,11 @@ bool Check() {
            // the record helper: mov eax,[0x95c2f0]; sub eax,[0x95c2ec]
            Expect(kRecord, {0xa1, 0xf0, 0xc2, 0x95, 0x00, 0x2b, 0x05, 0xec, 0xc2, 0x95, 0x00}) &&
            Expect(kTaskEntity, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x14}) &&
-           // HandleMessage's FirePressed test against the state at +0x50
-           Expect(0x569991, {0x83, 0x7f, 0x50, 0x00}) &&
+           // HandleMessage's FirePressed test against the state at +0x50, and its base-handler tail call
+           Expect(0x569991, {0x83, 0x7f, 0x50, 0x00}) && Expect(0x569a62, {0x53, 0x57, 0xe8, 0x35, 0x1d, 0x12, 0x00}) &&
+           Expect(kBaseMsg, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x0c, 0x8b, 0x45, 0x0c}) &&
+           // Initialize's bus subscriptions to Input.FirePressed and Input.FireReleased (the gate's premise)
+           Expect(0x56896a, {0xb9, 0xac, 0xde, 0x95, 0x00}) && Expect(0x568992, {0xb9, 0xb4, 0xde, 0x95, 0x00}) &&
            // Release (vtable slot 2): push ebx; push esi; mov esi,[esp+0xc]; cmp word [esi+4],0
            Expect(kRelease, {0x53, 0x56, 0x8b, 0x74, 0x24, 0x0c, 0x66, 0x83, 0x7e, 0x04, 0x00}) &&
            Expect(kMeleeVt + 0x08, {0xd0, 0x87, 0x56, 0x00}) &&
@@ -397,7 +408,7 @@ public:
     const char* Name() const override { return "Melee"; }
     const char* Description() const override { return "wum.sim.melee: melee fire gate, hit events and overrides for sim mods"; }
     bool RequiresKnownBuild() const override { return true; }
-    int Order() const override { return 56; }  // after WormAnchor (54): its input hook carries the gate
+    int Order() const override { return 56; }  // after WormAnchor (54)
     bool Install() override {
         g_log = Bool("Log", false);
         sm::SetBackend(nullptr);
@@ -425,7 +436,6 @@ public:
         g_ready = true;
         sm::SetBackend(&g_backend);
         sm::SetClaimObserver(&OnClaim, nullptr);
-        sw::SetInputFilter(&Filter);
         g_context = melange::lua50::OnContext(&OnContext, nullptr);
         g_contrib = melange::wormsign::AddContributor("melange.melee", &Contrib, nullptr);
         LOG_INFO("[melee] installed: wum.sim.melee, hooks armed in matches with a claim");
@@ -434,7 +444,6 @@ public:
     void Uninstall() override {
         SetOn(false);
         g_ready = false;
-        sw::SetInputFilter(nullptr);
         sm::SetBackend(nullptr);
         sm::SetClaimObserver(nullptr, nullptr);
         if (g_context) melange::lua50::RemoveOnContext(g_context);
