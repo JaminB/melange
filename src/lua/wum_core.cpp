@@ -10,6 +10,7 @@
 #include "core/game.h"
 #include "lua/sandbox_core.h"
 #include "melange/gamestate.h"
+#include "melange/weapons.h"
 #include "tools/json_mini.h"
 
 namespace melange::sandbox {
@@ -397,6 +398,11 @@ int GameWorms(lua_State* L) {
         lua_pushnumber(L, w.aim);
         lua_setfield(L, -2, "aim");
         if (w.weapon >= 0) SetInt(L, "weapon", w.weapon);
+        // 0.16: the weapon clone the active worm holds (weapon is then its base's id), absent for a vanilla weapon.
+        if (const char* clone = w.weapon >= 0 ? weapons::WieldedCloneName(w.slot, w.weapon, s.match.activeWorm) : nullptr) {
+            lua_pushstring(L, clone);
+            lua_setfield(L, -2, "clone");
+        }
         lua_rawseti(L, -2, i + 1);
     }
     return 1;

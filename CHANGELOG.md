@@ -19,7 +19,9 @@ by Wormsign.
   CPU-skinned build #1077. Lay a worm down or carry it (`body`), hold the game's animation clips and pose sliders,
   put its hands on world points, cut its head to a stump and draw the severed head.
 - `wum.render.hideHud(frames)`: leave the engine's HUD out of the picture for a cut-scene.
-- `wum.game.worms()` entries carry `aim` (the aim pitch).
+- `wum.game.worms()` entries carry `aim` (the aim pitch) and `clone` (the held weapon clone).
+- Weapon clones of the Bat, told apart from it by `wum.sim.melee`. A fourth clone may take cell 41 when declared
+  with `"replaces": "kUtilityBinoculars"`; the Binoculars leave the panel for that match.
 
 ### Fixed
 

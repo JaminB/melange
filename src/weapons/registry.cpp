@@ -136,6 +136,12 @@ bool Live() { return g_core.Live(); }
 
 int ActiveClone() { return g_core.Active(); }
 
+const char* WieldedCloneName(int slot, int32_t weaponId, int activeSlot) {
+    if (slot < 0 || slot != activeSlot || !g_core.Live()) return nullptr;
+    const core::Clone* c = g_core.At(g_core.Active());
+    return c && c->info.base == weaponId ? c->info.name : nullptr;
+}
+
 bool IsVid(int32_t v) { return v >= kVidBase && v < kVidBase + kMaxClones; }
 
 int32_t BaseOf(int32_t v) {

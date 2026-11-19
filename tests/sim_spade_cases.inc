@@ -18,16 +18,19 @@ struct FakeLand final : sl::Backend {
     }
 };
 struct FakeMelee final : sm::Backend {
-    int active = 1, weapon = 10, state = 0;
+    int active = 1, weapon = 10, state = 0, clone = -1;  // clone: the k of the Bat clone the active worm wields
     bool inRange = false;
     int strikes = 0;
-    int WeaponIndex(const char* name) override {
+    int WeaponIndex(const char* name, int* k) override {
+        *k = -1;
         if (!strcmp(name, "kWeaponBaseballBat")) return 10;
         if (!strcmp(name, "kWeaponProd")) return 11;
+        if (!strcmp(name, "kWeaponGraveSpade")) return *k = 0, 10;  // a weapon clone of the Bat
         return -1;
     }
     int ActiveSlot() override { return active; }
     int WeaponOf(int slot) override { return slot == active ? weapon : -1; }
+    int CloneOf(int slot) override { return slot == active ? clone : -1; }
     bool WormInRange() override { return inRange; }
     int EntityState() override { return state; }
     const char* Strike() override {
@@ -44,6 +47,9 @@ local function r(...) local t = {} for i = 1, arg.n do t[i] = tostring(arg[i]) e
 s.claim = r(wum.sim.melee.claim("kWeaponBaseballBat", {dig = true}))
 s.claimBad = r(wum.sim.melee.claim("kWeaponBazooka"))
 s.claimProd = r(wum.sim.melee.claim("kWeaponProd"))
+s.claimClone = r(wum.sim.melee.claim("kWeaponGraveSpade"))
+s.cloneListed = tostring(wum.sim.melee.list()[3].name == "kWeaponGraveSpade" and wum.sim.melee.list()[3].clone)
+s.vanillaListed = tostring(wum.sim.melee.list()[1].clone)
 s.mode = r(wum.sim.melee.mode("kWeaponBaseballBat"))
 s.list = table.getn(wum.sim.melee.list()) .. ":" .. wum.sim.melee.list()[1].mode
 s.carve = r(wum.sim.carve(1, 2, 3, 10))
@@ -119,7 +125,10 @@ void TestSpade() {
 
     Expect(Storage("spade", "claim") == "true" && Storage("spade", "claimBad") == "nil,not melee",
            "claim: a melee weapon only: " + Storage("spade", "claimBad"));
-    Expect(Storage("spade", "mode") == "auto" && Storage("spade", "list") == "2:auto", "mode and list");
+    Expect(Storage("spade", "mode") == "auto" && Storage("spade", "list") == "3:auto", "mode and list");
+    Expect(Storage("spade", "claimClone") == "true" && Storage("spade", "cloneListed") == "true" &&
+               Storage("spade", "vanillaListed") == "false",
+           "a Bat clone is a claim of its own, listed as a clone");
     Expect(Storage("spade", "carve") == "3" && land.calls.size() == 1 && land.calls[0] == "1,2,3,10",
            "carve passes its arguments and answers the removed count: " + Storage("spade", "carve"));
     Expect(Storage("spade", "carveBad") == "nil,bad arguments" && Storage("spade", "raises") == "false",
@@ -208,6 +217,18 @@ void TestSpade() {
     const std::string log2 = Storage("spade", "log");
     Expect(log2 == log + "release:1:0:strike;", "a claim without dig still reports press and release: " + log2);
     melee.weapon = 10;
+    // The Bat clone shares the Bat's id but not its claim: with no target in range the Bat (dig, auto) would swallow
+    // the press; the clone's claim has no dig, so it passes, and only the "*" handler hears its release.
+    melee.clone = 0;
+    melee.inRange = false;
+    Expect(sm::ClaimedBy(1) && !sm::OnFire(1, true) && !sm::OnFire(1, false), "the clone's press is its own claim's");
+    const sm::HitResult hc = sm::OnHit(1, 2, at, 30, 0.12f);
+    Expect(!hc.cancel && !hc.setDamage, "the Bat's hit handler does not see the clone's hit");
+    core::Update();
+    Expect(Storage("spade", "log") == log2 + "release:1:0:strike;", "the clone's events carry its own name");
+    melee.clone = -1;
+    Expect(sm::OnFire(1, true) && sm::OnFire(1, false), "back on the vanilla Bat: the dig gate again");
+    core::Update();
     uint8_t mh[sm::kHashBytes], mh2[sm::kHashBytes];
     Expect(sm::HashBytes(mh, sizeof mh) == sm::kHashBytes && sm::HashBytes(mh2, sizeof mh2) == sm::kHashBytes &&
                memcmp(mh, mh2, sizeof mh) == 0 && mh[0] == 10,

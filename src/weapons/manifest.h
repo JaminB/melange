@@ -23,6 +23,7 @@ struct CloneDecl {
     std::string mod, name, base;
     int baseId = -1;
     int cell = -1;
+    std::string replaces;  // the vanilla item whose cell this clone takes (kTakeableCells), "" for a free cell
     std::string bank;
     std::vector<SetValue> set;
     std::string panelIcon, hudIcon;
@@ -33,9 +34,13 @@ struct Error {
     std::string mod, text;
 };
 constexpr const char* kContainerClass = "PayloadWeaponPropertiesContainer";
+constexpr const char* kMeleeContainerClass = "MeleeWeaponPropertiesContainer";
 
-int BaseId(const std::string& base);             // v1 whitelist; -1 otherwise
+int BaseId(const std::string& base);             // the whitelist; -1 otherwise
 const char* BaseName(int id);                    // nullptr unless whitelisted
+const char* BaseClass(int id);                   // the base's container class, nullptr unless whitelisted
+bool IsMeleeBase(int id);                        // kWeaponBaseballBat (0.16)
+int TakenId(int cell);                           // the vanilla id a takeable cell holds, -1 for any other cell
 bool ValidName(const std::string& name);
 std::vector<CloneDecl> Parse(const spice::Manifest& m, std::vector<Error>* errs);  // empty when refused
 // Mods in load order, each with its own Parse() result. A mod whose clones exceed the free cells, reuse another mod's

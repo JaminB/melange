@@ -31,9 +31,11 @@
 #include <windows.h>
 #include <safetyhook.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 #include "core/log.h"
 #include "core/mem.h"
@@ -48,6 +50,8 @@
 #include "melange/sim.h"
 #include "melange/weapons.h"
 #include "melange/wormsign.h"
+#include "weapons/engine.h"
+#include "weapons/manifest.h"
 
 namespace {
 namespace sm = melange::simmelee;
@@ -60,7 +64,7 @@ constexpr uintptr_t kRelease = 0x5687d0, kIdleSweep = 0x5683b0, kIterate = 0x519
 constexpr uintptr_t kRecord = 0x5160e0, kTaskEntity = 0x68e4ca, kRecordIndex = 0x95c2a0, kActiveWorm = 0x95fb98;
 constexpr uintptr_t kWeaponNames = 0x90c920, kBaseMessageVt = 0x81aa14, kBaseMsg = 0x68b79e;
 constexpr int kWeaponNameCount = 0x45;
-constexpr uint32_t kState = 0x50, kProps = 0x58, kSwingDir = 0x68, kCollider = 0xb8, kOwnTask = 0xc8;
+constexpr uint32_t kState = 0x50, kProps = 0x58, kSwingDir = 0x68, kCollider = 0xb8, kOwnTask = 0xc8, kName = 0x2b8;
 constexpr uint16_t kNoRecord = 0xffff;
 constexpr const char* kMeleeNames[] = {"kWeaponBaseballBat", "kWeaponFirePunch", "kWeaponProd", "kWeaponNoMoreNails"};
 
@@ -112,10 +116,21 @@ bool LiveOk() {
 
 class EngineMelee final : public sm::Backend {
 public:
-    int WeaponIndex(const char* name) override {
+    int WeaponIndex(const char* name, int* clone) override {
+        if (clone) *clone = -1;
         bool melee = false;
         for (const char* m : kMeleeNames) melee = melee || std::strcmp(m, name) == 0;
-        if (!melee) return -1;
+        if (!melee) {
+            // A weapon clone of a melee base (0.16: the Bat), by its declared name; its index is its base's.
+            melange::weapons::CloneInfo c[melange::weapons::kMaxClones];
+            const int n = std::min(melange::weapons::Declared(c, melange::weapons::kMaxClones), melange::weapons::kMaxClones);
+            for (int k = 0; k < n; ++k)
+                if (std::strcmp(c[k].name, name) == 0 && melange::weapons::manifest::IsMeleeBase(c[k].base)) {
+                    if (clone) *clone = c[k].k;
+                    return c[k].base;
+                }
+            return -1;
+        }
         for (int i = 1; i < kWeaponNameCount; ++i) {
             char n[48] = "";
             melange::gamestate::detail::ReadCString(Rd<uintptr_t>(kWeaponNames + 4 * i), n, sizeof n);
@@ -128,6 +143,22 @@ public:
         sw::WormInfo w;
         sw::Backend* b = sw::GetBackend();
         return b && slot >= 0 && b->Read(slot, &w) ? w.weapon : -1;
+    }
+    // The clone the active worm wields. The wielded entity's own container name (+0x2b8, what the engine built it from)
+    // decides; before the first Update of a new wield there is no entity yet, and the registry's selection does.
+    int CloneOf(int slot) override {
+        if (slot < 0 || slot != ActiveSlot()) return -1;
+        melange::weapons::CloneInfo c[melange::weapons::kMaxClones];
+        const int n = std::min(melange::weapons::Declared(c, melange::weapons::kMaxClones), melange::weapons::kMaxClones);
+        if (n <= 0) return -1;
+        if (LiveOk()) {
+            const std::string name = melange::weapons::engine::XStringValue(g_live + kName);
+            for (int k = 0; k < n; ++k)
+                if (name == c[k].name) return c[k].k;
+            return -1;
+        }
+        const int k = melange::weapons::ActiveClone();
+        return k >= 0 && k < n && c[k].base == WeaponOf(slot) ? k : -1;
     }
     bool WormInRange() override { return LiveOk() && g_reach.entity == g_live && g_reach.worm; }
     int EntityState() override { return LiveOk() ? static_cast<int>(Rd<uint32_t>(g_live + kState)) : -1; }
@@ -199,7 +230,7 @@ uint32_t __stdcall HkRelease(uintptr_t self) {
 
 bool ClaimedByActive() {
     const int slot = g_backend.ActiveSlot();
-    return slot >= 0 && sm::Claimed(g_backend.WeaponOf(slot));
+    return slot >= 0 && sm::ClaimedBy(slot);
 }
 
 // The idle sweep of a claimed weapon: the iterator below skips every record that is neither the own worm nor a worm.
@@ -294,7 +325,7 @@ bool Poke(uintptr_t a, const void* v, size_t n) {
 
 void __fastcall HkImpact(uintptr_t self, void*) {
     const int attacker = g_backend.ActiveSlot();
-    if (!g_on || attacker < 0 || !sm::Claimed(g_backend.WeaponOf(attacker))) return g_hImpact.thiscall<void>(self);
+    if (!g_on || attacker < 0 || !sm::ClaimedBy(attacker)) return g_hImpact.thiscall<void>(self);
     const uintptr_t rec = RecordAt(Rd<uint16_t>(kRecordIndex));
     if (!rec || !(Rd<uint32_t>(rec + 0x14) & 1)) return g_hImpact.thiscall<void>(self);
     const int victim = SlotOfEntity(EntityOfTask(Rd<uint32_t>(rec + 0x18)));

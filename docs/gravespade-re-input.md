@@ -410,10 +410,14 @@ validation protocol (see the WUM net time-sync notes). Sending these timers from
    from the strike sweep by LaunchDelay (200 ms on the Bat). A worm that walks away gets a swing that misses, as in
    vanilla.
 7. **`DoubleDamage`.** It still doubles an overridden damage. Lua can halve it, or accept the vanilla rule.
-8. **The repurposed weapon is not only the spade.** Claiming `kWeaponBaseballBat` makes Kindjal's Nail Bat the spade.
-   kindjal-heavy and kindjal-brutal also tune the Bat (`plugins/kindjal-heavy/mod/sim/main.lua:20`,
-   `plugins/kindjal-brutal/mod/sim/main.lua:19`). A true melee clone needs separate RE: `kBases` in
-   `src/weapons/manifest.cpp`, the melee name compare at `0x567a40`, and `0x5c68e0`/`0x5d6420`.
+8. **The repurposed weapon is not only the spade.** Claiming `kWeaponBaseballBat` made Kindjal's Nail Bat the spade.
+   **Built (0.16):** the spade is a weapon clone of the Bat (`kBases` has the Bat, its `set` is checked against
+   `MeleeWeaponPropertiesContainer`), on cell 41, which a manifest may take from the Binoculars with `"replaces"`.
+   Claims are told apart by the wielded entity's container name (`+0x2b8`), so the Nail Bat stays vanilla Kindjal.
+   Checked: the one Bat-name compare in `0x567a40` (`0x567f50`) only picks the stats id of a hit (10, else 0x43);
+   `0x5c68e0` is `CrateLogicEntity::SetupWeaponCrate` (crate names against the name table, set up between turns
+   while no name is swapped); `0x5d6420` is the Wormpot service's `kWeaponProd` "DimMak" tweak. See
+   [weapons.md](weapons.md#melee-clones).
 9. **LocalNet gate.**
    - A dig hold and a strike, each on A's turn and on B's turn.
    - Wormsign `melange.melee` and `mod.kindjal.env` equal on both machines.

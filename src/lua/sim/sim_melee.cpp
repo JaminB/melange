@@ -24,7 +24,7 @@ char g_err[160];
 struct Claim {
     bool used = false;
     char name[48] = "";
-    int index = -1, mod = -1;
+    int index = -1, clone = -1, mod = -1;
     bool dig = false;
     Mode mode = Mode::Auto;
 };
@@ -79,10 +79,14 @@ int ClaimByName(const char* name) {
     return -1;
 }
 
-int ClaimByIndex(int weaponIndex) {
+// The claim on the weapon the worm in `slot` wields: its base id and which clone of it (or the vanilla one), -1.
+int ClaimOfSlot(int slot) {
+    if (!g_backend || slot < 0) return -1;
+    const int weaponIndex = g_backend->WeaponOf(slot);
     if (weaponIndex < 0) return -1;
+    const int clone = g_backend->CloneOf(slot);
     for (int i = 0; i < kMaxClaims; ++i)
-        if (g_claims[i].used && g_claims[i].index == weaponIndex) return i;
+        if (g_claims[i].used && g_claims[i].index == weaponIndex && g_claims[i].clone == clone) return i;
     return -1;
 }
 
@@ -99,7 +103,7 @@ int WieldedClaim(int* slotOut) {
     if (!g_backend) return -1;
     const int slot = g_backend->ActiveSlot();
     if (slotOut) *slotOut = slot;
-    return slot < 0 ? -1 : ClaimByIndex(g_backend->WeaponOf(slot));
+    return ClaimOfSlot(slot);
 }
 
 void Release(const char* why) {
@@ -168,7 +172,8 @@ int __cdecl LClaim(l5::State* L) {
     if (!simbridge::InTopLevelChunk()) return NilReason(L, "too late");
     const char* name = a.tostring(L, 1);
     if (!g_backend) return NilReason(L, "unavailable");
-    const int index = g_backend->WeaponIndex(name);
+    int clone = -1;
+    const int index = g_backend->WeaponIndex(name, &clone);
     if (index < 0) return NilReason(L, "not melee");
     const int have = ClaimByName(name);
     if (have >= 0) {
@@ -189,6 +194,7 @@ int __cdecl LClaim(l5::State* L) {
     c.used = true;
     snprintf(c.name, sizeof c.name, "%s", name);
     c.index = index;
+    c.clone = clone;
     c.mod = mod;
     c.dig = dig;
     c.mode = mode;
@@ -343,7 +349,7 @@ int __cdecl LResult(l5::State* L) {
     return 1;
 }
 
-// list() -> {{name=, mod=, dig=, mode=}, ...}
+// list() -> {{name=, mod=, clone=, dig=, mode=}, ...}
 int __cdecl LList(l5::State* L) {
     const auto& a = l5::A();
     a.newtable(L);
@@ -358,6 +364,9 @@ int __cdecl LList(l5::State* L) {
         a.rawset(L, t);
         a.pushstring(L, "mod");
         a.pushstring(L, simbridge::ModIdAt(c.mod) ? simbridge::ModIdAt(c.mod) : "");
+        a.rawset(L, t);
+        a.pushstring(L, "clone");
+        a.pushboolean(L, c.clone >= 0);
         a.rawset(L, t);
         a.pushstring(L, "dig");
         a.pushboolean(L, c.dig);
@@ -414,6 +423,7 @@ int Claims(ClaimInfo* out, int max) {
         ClaimInfo& o = out[n++];
         snprintf(o.name, sizeof o.name, "%s", c.name);
         o.index = c.index;
+        o.clone = c.clone;
         o.mod = c.mod;
         o.dig = c.dig;
         o.mode = c.mode;
@@ -421,7 +431,7 @@ int Claims(ClaimInfo* out, int max) {
     return n;
 }
 
-bool Claimed(int weaponIndex) { return ClaimByIndex(weaponIndex) >= 0; }
+bool ClaimedBy(int slot) { return ClaimOfSlot(slot) >= 0; }
 bool InHit() { return g_inHit; }
 
 bool OnFire(int slot, bool pressed) {
@@ -433,7 +443,7 @@ bool OnFire(int slot, bool pressed) {
         return swallow;
     }
     if (g_held.on) return g_held.slot == slot && g_held.mode == Mode::Dig;  // a repeat of the held press
-    const int c = ClaimByIndex(g_backend->WeaponOf(slot));
+    const int c = ClaimOfSlot(slot);
     if (c < 0) return false;
     if (g_backend->EntityState() > 0) return false;  // mid-swing: the engine's own business, no event
     // dig = false: the gate is off, every press goes to the engine; press and release are still reported.
@@ -449,19 +459,19 @@ bool OnFire(int slot, bool pressed) {
 }
 
 void OnStrike(int slot) {
-    const int c = g_backend && slot >= 0 ? ClaimByIndex(g_backend->WeaponOf(slot)) : -1;
+    const int c = ClaimOfSlot(slot);
     if (c >= 0) Queue(Ev::Strike, c, slot, 0, nullptr);
 }
 
 void OnDone(int slot) {
-    const int c = g_backend && slot >= 0 ? ClaimByIndex(g_backend->WeaponOf(slot)) : -1;
+    const int c = ClaimOfSlot(slot);
     if (c >= 0) Queue(Ev::Done, c, slot, 0, nullptr);
 }
 
 HitResult OnHit(int attacker, int victim, const float pos[3], float damage, float impulse) {
     HitResult none;
     if (!g_backend || g_inHit || attacker < 0) return none;
-    const int c = ClaimByIndex(g_backend->WeaponOf(attacker));
+    const int c = ClaimOfSlot(attacker);
     if (c < 0) return none;
     ++g_hits;
     using simbridge::Arg;
@@ -486,7 +496,7 @@ HitResult OnHit(int attacker, int victim, const float pos[3], float damage, floa
 void Tick() {
     if (g_held.on && g_backend) {
         const int active = g_backend->ActiveSlot();
-        const int c = active == g_held.slot ? ClaimByIndex(g_backend->WeaponOf(active)) : -1;
+        const int c = active == g_held.slot ? ClaimOfSlot(active) : -1;
         if (c != g_held.claim) Release("cancel");
     }
     if (!g_queued) return;
@@ -513,6 +523,7 @@ size_t HashBytes(uint8_t* out, size_t cap) {
     size_t n = 0;
     for (const Claim& c : g_claims) {
         out[n++] = static_cast<uint8_t>(c.used ? c.index : 0xff);
+        out[n++] = static_cast<uint8_t>(c.used ? c.clone & 0xff : 0xff);
         out[n++] = static_cast<uint8_t>(c.mod & 0xff);
         out[n++] = c.dig;
         out[n++] = static_cast<uint8_t>(c.mode);

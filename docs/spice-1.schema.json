@@ -106,16 +106,17 @@
 
     "weapons": {
       "type": "array",
-      "maxItems": 3,
-      "description": "Weapon clones (content mods only). At most 3 across all enabled mods, in the free panel cells.",
+      "maxItems": 4,
+      "description": "Weapon clones (content mods only). At most 3 across all enabled mods in the free panel cells, and a fourth in cell 41 with replaces.",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["name", "base"],
         "properties": {
           "name": { "type": "string", "pattern": "^kWeapon[A-Z][A-Za-z0-9]{2,40}$", "description": "Resource name of the clone; not a vanilla name, not kWeaponCluster* or kWeaponFactory*." },
-          "base": { "type": "string", "enum": ["kWeaponBazooka", "kWeaponGrenade", "kWeaponHolyHandGrenade", "kWeaponBananaBomb", "kWeaponGasCanister"] },
-          "cell": { "type": "integer", "enum": [29, 39, 40], "description": "Panel cell; default: the first free cell." },
+          "base": { "type": "string", "enum": ["kWeaponBazooka", "kWeaponGrenade", "kWeaponHolyHandGrenade", "kWeaponBananaBomb", "kWeaponGasCanister", "kWeaponBaseballBat"] },
+          "cell": { "type": "integer", "enum": [29, 39, 40, 41], "description": "Panel cell; default: the first free cell. 41 only with replaces." },
+          "replaces": { "type": "string", "enum": ["kUtilityBinoculars"], "description": "With cell 41 only: the vanilla item that cell holds, taken off the panel while the clone is live." },
           "bank": { "type": "string", "description": "A .xom bank under assets/data/ holding a container named `name`." },
           "set": { "type": "object", "additionalProperties": { "type": ["number", "boolean", "string"] }, "description": "Container fields by schema name, with values of the field's type." },
           "panelIcon": { "type": "string", "description": "A 64x64 RGBA PNG under assets/." },

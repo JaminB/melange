@@ -551,12 +551,22 @@ bool Registry::Init(std::string* why) {
         c.hud = !c.decl.hudIcon.empty() && e_.HudUsable(c.info.mod);
     }
     for (int k = 0; k < n_; ++k) {
-        const int cell = clones_[k].info.cell;
-        if (cell < 0 || cell >= kPanelCells || U32(CellAddr(cell)) != kUndefined || U32(CellAddr(cell) + 4) != 0) {
-            *why = std::string(clones_[k].info.name) + ": panel cell " + std::to_string(cell) + " is not free";
+        Clone& c = clones_[k];
+        const int cell = c.info.cell;
+        // A takeable cell (kTakeableCells) must still hold its vanilla item; a free one must be empty.
+        const int taken = c.decl.replaces.empty() ? -1 : manifest::TakenId(cell);
+        const bool ok = cell >= 0 && cell < kPanelCells &&
+                        (taken >= 0 ? U32(CellAddr(cell)) == static_cast<uint32_t>(taken)
+                                    : c.decl.replaces.empty() && U32(CellAddr(cell)) == kUndefined && U32(CellAddr(cell) + 4) == 0);
+        if (!ok) {
+            *why = std::string(c.info.name) + ": panel cell " + std::to_string(cell) +
+                   (taken >= 0 ? " does not hold " + c.decl.replaces : std::string(" is not free"));
             Reset();
             return false;
         }
+        c.takenId = taken;
+        c.cellWas[0] = U32(CellAddr(cell));
+        c.cellWas[1] = U32(CellAddr(cell) + 4);
     }
     for (int k = 0; k < n_; ++k) {
         Clone& c = clones_[k];
@@ -574,8 +584,9 @@ bool Registry::Init(std::string* why) {
     for (int k = 0; k < n_; ++k) {
         Clone& c = clones_[k];
         c.info.live = true;
-        LOG_INFO("[weapons] clone k=%d %s (%s) vid %x cell %d icon %x container %08x desc %08x text=%d help=%d hud=%d", k,
+        LOG_INFO("[weapons] clone k=%d %s (%s) vid %x cell %d%s%s icon %x container %08x desc %08x text=%d help=%d hud=%d", k,
                  c.info.name, c.decl.base.c_str(), static_cast<unsigned>(c.info.vid), c.info.cell,
+                 c.takenId >= 0 ? " taken from " : "", c.takenId >= 0 ? c.decl.replaces.c_str() : "",
                  static_cast<unsigned>(U32(CellAddr(c.info.cell) + 4)), static_cast<unsigned>(c.info.container),
                  static_cast<unsigned>(c.info.descriptor), c.text, c.help, c.hud);
     }
@@ -599,9 +610,11 @@ void Registry::Unswap() {
 void Registry::RestoreCells() {
     for (int k = 0; k < n_; ++k) {
         if (!cellWritten_[k]) continue;
-        const uintptr_t a = CellAddr(clones_[k].info.cell);
-        PutU32(a, kUndefined);
-        PutU32(a + 4, 0);
+        const Clone& c = clones_[k];
+        const uintptr_t a = CellAddr(c.info.cell);
+        // What the cell held before this match: empty for a free cell, the vanilla item for a taken one.
+        PutU32(a, c.takenId >= 0 ? c.cellWas[0] : kUndefined);
+        PutU32(a + 4, c.takenId >= 0 ? c.cellWas[1] : 0);
         cellWritten_[k] = false;
     }
 }
@@ -635,6 +648,17 @@ void Registry::TurnEnded() {
     Unswap();
     active_ = -1;
     LOG_INFO("[weapons] turn ended: name slot restored (tick %u)", e_.Tick());
+}
+
+bool Registry::Refuses(int32_t value) const {
+    if (!live_ || IsVidValue(value)) return false;
+    for (int k = 0; k < n_; ++k)
+        if (clones_[k].takenId >= 0 && value == clones_[k].takenId) {
+            LOG_WARN("[weapons] select %d refused: its cell %d is %s's (tick %u)", value, clones_[k].info.cell,
+                     clones_[k].info.name, e_.Tick());
+            return true;
+        }
+    return false;
 }
 
 int32_t Registry::Select(int32_t value) {

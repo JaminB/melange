@@ -1015,8 +1015,11 @@ section was not loaded. It is not caused by `worm:kill`.
 ### Melee weapons: `wum.sim.melee`
 
 `wum.sim.melee` puts one of the four vanilla melee weapons (`kWeaponBaseballBat`, `kWeaponFirePunch`, `kWeaponProd`,
-`kWeaponNoMoreNails`) under a sim mod's control (Melange 0.16): a fire gate that turns the weapon into a tool, events
-for the press, release, strike and every hit, and overrides of the hit. Check `if wum.sim.melee then`.
+`kWeaponNoMoreNails`), or a weapon clone of the Bat by its own name, under a sim mod's control (Melange 0.16): a fire
+gate that turns the weapon into a tool, events for the press, release, strike and every hit, and overrides of the hit.
+Check `if wum.sim.melee then`. A Bat clone and the vanilla Bat share the Bat's weapon id but are separate claims: which
+one a worm wields is read from its melee entity's own container name, so a claim on the clone never sees the Bat's
+presses or hits and the other way round (events carry the claimed name).
 
 | Function | Returns |
 |---|---|
@@ -1027,7 +1030,7 @@ for the press, release, strike and every hit, and overrides of the hit. Check `i
 | `mode(weapon[, mode])` | The gate mode, or sets it (claimant only): `true`, `nil, "not claimed"`, `"not the claimant"` |
 | `strike(weapon)` | Starts the engine's own swing now (the can-fire rules apply): `true`; `nil, "not wielded"`, `"busy"`, `"in hit"`, `"not claimed"` |
 | `result{cancel = bool, kill = bool, damage = n, impulse = f, level = bool}` | Only inside a `hit` handler: `true`, else `nil, "not in hit"`. See below |
-| `list()` | `{{name, mod, dig, mode}, ...}` |
+| `list()` | `{{name, mod, clone, dig, mode}, ...}` (`clone`: the claim is on a weapon clone) |
 
 **The gate** (`dig = true`). When the active worm presses fire with the claimed weapon selected and the weapon is idle:
 in mode `"dig"` the press is swallowed, in `"strike"` it goes to the engine's swing, and in `"auto"` (the default) it

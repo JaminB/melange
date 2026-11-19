@@ -495,6 +495,12 @@ LandRayResult LandRay(const Vec3& a, const Vec3& b, LandHit* out) {
     return g_rayResult;
 }
 }  // namespace gamestate
+namespace weapons {  // the clone registry: one Bat clone held by the active worm when g_cloneOn
+bool g_cloneOn = false;
+const char* WieldedCloneName(int slot, int32_t weaponId, int activeSlot) {
+    return g_cloneOn && slot == activeSlot && weaponId == 10 ? "kWeaponGraveSpade" : nullptr;
+}
+}  // namespace weapons
 namespace sandbox {
 double NowSeconds() { return fake::g_clock; }
 void EngineSubscribe(const std::string& name, bool on) {
@@ -1174,6 +1180,13 @@ void TestGame() {
              "worm velocity in units per second (the engine's per-millisecond value x1000)");
     ExpectEq(Eval(nullptr, "local w = wum.game.worms()[2] return w.name, w.alive, w.weapon"), "Leto\tfalse\tnil",
              "a dead worm without a weapon");
+    ExpectEq(Eval(nullptr, "return wum.game.worms()[1].clone"), "nil", "no clone field for a vanilla weapon");
+    weapons::g_cloneOn = true;
+    s.worms[0].weapon = 10;
+    ExpectEq(Eval(nullptr, "local w = wum.game.worms() return w[1].weapon, w[1].clone, w[2].clone"), "10	kWeaponGraveSpade	nil",
+             "the active worm's clone by name, its base's id in weapon");
+    weapons::g_cloneOn = false;
+    s.worms[0].weapon = 1;
     ExpectEq(Eval(nullptr, "local t = wum.game.teams() return #t, t[1].slot, t[1].name, t[1].active, t[1].ai, t[1][\"local\"]"),
              "1\t1\tSandworms\ttrue\ttrue\tfalse", "teams fields");
     ExpectEq(Eval(nullptr, "return wum.game.activeWorm()"), "5", "active worm slot");
