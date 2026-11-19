@@ -280,6 +280,11 @@ void FillSnapshot(const Layout& l, const Engine& e, const MatchInfo& m, Snapshot
         w.vel = ReadVec(c + 0x50);
         w.yaw = Finite(Rd<float>(c + 0x90));
         w.aim = Finite(Rd<float>(c + 0xd0));
+        // the bank the game speaks this worm with; the team's own SfxBankName is empty in a match (seen in build #1077)
+        char wbank[64];
+        ReadCString(Rd<uintptr_t>(c + 0xb4), wbank, sizeof wbank);
+        const std::string wvoice = ::melange::audio::fsb::NormalizeBankName(wbank);
+        memcpy(w.voice, wvoice.c_str(), wvoice.size() + 1);
         out->worms[out->wormCount++] = w;
     }
 }

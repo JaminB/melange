@@ -3,7 +3,7 @@
 export interface Vec3 { x: number | null; y: number | null; z: number | null; }
 export interface Worm {
   slot: number; team: number; posInTeam: number; name: string; active: boolean; alive: boolean;
-  health: number; physicsState: number; weapon: number; pos: Vec3; vel: Vec3;
+  health: number; physicsState: number; weapon: number; pos: Vec3; vel: Vec3; voice?: string;
 }
 export interface Team {
   slot: number; name: string; active: boolean; ai: boolean; local: boolean;

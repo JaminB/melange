@@ -9,7 +9,8 @@ The game's own team voices for client mods: play, cut and remix a team's speech 
 
 - `wum.audio.voice.lines(bank)` and `wum.audio.voice.load(bank, line)`: list and decode the lines of a speech bank
   (`Data/Audio/PC/vo*.fsb`, MPEG or 16-bit PCM, through minimp3). A loaded line is an ordinary sound handle.
-- `wum.game.teams()` entries carry `voice`, the team's speech bank.
+- `wum.game.worms()` and `wum.game.teams()` entries carry `voice`, the speech bank the game speaks a worm (or a team)
+  with. In a match the team's own field is empty, so use the worm's.
 - `wum.audio.cut(handle, from, len[, fade])`: a new sound from part of another, faded at both ends.
 - `wum.audio.unload(handle)`: free one sound; voices already playing it finish.
 - `wum.audio.set(voice, opts)`: change a playing voice's `volume` and `pitch`.

@@ -398,6 +398,10 @@ int GameWorms(lua_State* L) {
         lua_pushnumber(L, w.aim);
         lua_setfield(L, -2, "aim");
         if (w.weapon >= 0) SetInt(L, "weapon", w.weapon);
+        if (w.voice[0]) {  // the speech bank the game uses for this worm, for wum.audio.voice (Melange 0.17)
+            lua_pushstring(L, w.voice);
+            lua_setfield(L, -2, "voice");
+        }
         // 0.16: the weapon clone the active worm holds (weapon is then its base's id), absent for a vanilla weapon.
         if (const char* clone = w.weapon >= 0 ? weapons::WieldedCloneName(w.slot, w.weapon, s.match.activeWorm) : nullptr) {
             lua_pushstring(L, clone);
