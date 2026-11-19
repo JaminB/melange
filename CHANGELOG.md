@@ -30,6 +30,12 @@ by Wormsign.
 
 Every player needs the same Melange: the three new Wormsign contributors differ from 0.15 at tick 0.
 
+### Fixed
+
+- Melange.ini is read from the disk once and then served from memory (a watcher thread drops the copy when the file
+  changes). Mods re-read their settings twice a second from Lua, and on a busy machine closing the ini could stall the
+  game's main thread for 8 seconds (an online match dropped).
+
 ## 0.15.0
 
 Erg: spawn areas dealt per match, map packs that pin their time of day and name

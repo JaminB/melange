@@ -12,4 +12,7 @@ std::string GetString(const char* section, const char* key, const char* def);
 // Writes the key only if it is missing, so a fresh ini documents every option with its default.
 void EnsureKey(const char* section, const char* key, const char* def);
 void SetString(const char* section, const char* key, const char* value);
+// Reads are cached (a watcher thread drops the cache when the file changes); a writer that bypasses SetString calls this
+// so its change is seen on the very next read.
+void Invalidate();
 }  // namespace melange::config
