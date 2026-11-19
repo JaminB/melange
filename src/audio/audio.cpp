@@ -14,6 +14,7 @@
 #include "audio/clips.h"
 #include "audio/mixer.h"
 #include "audio/music_gate.h"
+#include "audio/voice_banks.h"
 #include "audio/voicebook.h"
 #include "core/events.h"
 #include "core/log.h"
@@ -239,6 +240,77 @@ void Release(const void* owner) {
     g_music.Release(owner);
     StopAll(owner);
     g_clips.erase(owner);
+}
+
+uint32_t CutClip(const void* owner, uint32_t clip, double from, double len, double fade, std::string* why) {
+    auto it = g_clips.find(owner);
+    if (it == g_clips.end()) {
+        if (why) *why = "unknown sound";
+        return 0;
+    }
+    return it->second.Cut(clip, from, len, fade, why);
+}
+
+// The mixer holds its own reference to a playing clip, so the PCM it reads stays alive until the voice is released.
+bool UnloadClip(const void* owner, uint32_t clip) {
+    auto it = g_clips.find(owner);
+    return it != g_clips.end() && it->second.Remove(clip);
+}
+
+bool SetVoice(const void* owner, uint32_t voice, const float* volume, const float* pitch) {
+    if (!g_book.Owns(owner, voice)) return false;
+    VoiceInfo* v = g_book.Find(voice);
+    if (!v) return false;
+    if (volume) {
+        v->volume = *volume;
+        float level = *volume;
+        if (v->positional) {
+            render::Camera cam;
+            if (render::GetCamera(&cam) && cam.valid) level = PositionalVolume(*volume, Distance(cam.pos, v->pos), g_near, g_far);
+            if (std::isnan(v->pos[0]) || std::isnan(v->pos[1]) || std::isnan(v->pos[2])) level = 0.0f;
+        }
+        v->applied = level;
+        if (g_mixer) g_mixer->SetVolume(voice, level);
+    }
+    if (pitch && g_mixer) g_mixer->SetPitch(voice, *pitch);
+    return true;
+}
+
+bool VoiceLines(const std::string& bank, std::vector<VoiceLine>* out, std::string* why) {
+    const fsb::Bank* b = voicebanks::Get(bank, nullptr, why);
+    if (!b) return false;
+    out->clear();
+    out->reserve(b->samples.size());
+    for (const fsb::Sample& s : b->samples) out->push_back({s.name, s.Seconds()});
+    return true;
+}
+
+uint32_t LoadVoice(const void* owner, const std::string& bank, const std::string& line, std::string* why) {
+    std::string canonical;
+    const fsb::Bank* b = voicebanks::Get(bank, &canonical, why);
+    if (!b) return 0;
+    const int i = fsb::FindLine(*b, line);
+    if (i < 0) {
+        if (why) *why = "unknown line";
+        return 0;
+    }
+    const fsb::Sample& s = b->samples[static_cast<size_t>(i)];
+    const std::string key = "voice:" + canonical + "/" + s.name;
+    ClipCache& cache = g_clips[owner];
+    if (const uint32_t have = cache.Find(key)) return have;
+    if (cache.Count() >= kMaxClipsPerMod) {  // before decoding: the cache would refuse it anyway
+        if (why) *why = "too many sounds loaded";
+        return 0;
+    }
+    fsb::Pcm pcm;
+    if (!voicebanks::Decode(canonical, s, &pcm, why)) return 0;
+    std::vector<uint8_t> bytes(pcm.samples.size() * 2);
+    for (size_t k = 0; k < pcm.samples.size(); ++k) {
+        const uint16_t u = static_cast<uint16_t>(pcm.samples[k]);
+        bytes[2 * k] = static_cast<uint8_t>(u);
+        bytes[2 * k + 1] = static_cast<uint8_t>(u >> 8);
+    }
+    return cache.AddPcm(key, pcm.channels, pcm.rate, std::move(bytes), why);
 }
 
 bool MusicAvailable() { return g_installed && fmodmute::Live(); }

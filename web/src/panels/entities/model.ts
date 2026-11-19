@@ -3,11 +3,11 @@
 export interface Vec3 { x: number | null; y: number | null; z: number | null; }
 export interface Worm {
   slot: number; team: number; posInTeam: number; name: string; active: boolean; alive: boolean;
-  health: number; physicsState: number; weapon: number; pos: Vec3; vel: Vec3;
+  health: number; physicsState: number; weapon: number; pos: Vec3; vel: Vec3; voice?: string;
 }
 export interface Team {
   slot: number; name: string; active: boolean; ai: boolean; local: boolean;
-  colour: number; alliance: number; roundsWon: number; score: number;
+  colour: number; alliance: number; roundsWon: number; score: number; voice?: string;
 }
 export interface Match {
   inMatch: boolean; attract?: boolean; online: boolean; currentTeam: number; activeWorm: number;

@@ -73,9 +73,76 @@ h = wum.audio.load("m.wav")
              "and release");
 }
 
+// Melange 0.17: wum.audio.voice (lines, load), cut, unload and set, through the fakes in sandbox_fakes_audio.inc.
+void TestVoiceApi() {
+    fake::g_audioAvail = true;
+    fake::g_audioVoices.clear();
+    fake::g_audioClips.clear();
+    SetMod("voa", R"lua(
+function r(...) local t = table.pack(...); for i = 1, t.n do t[i] = tostring(t[i]) end; return table.concat(t, ",") end
+)lua");
+    SetMod("vob", R"lua(
+function r(...) local t = table.pack(...); for i = 1, t.n do t[i] = tostring(t[i]) end; return table.concat(t, ",") end
+)lua");
+    Expect(sandbox::LoadMod("voa") && sandbox::LoadMod("vob"), "voice mods load");
+    ExpectEq(Eval(nullptr, "return type(wum.audio.voice.lines)"), "function", "wum.audio.voice exists");
+    Expect(Eval(nullptr, "wum.audio.voice.load = nil").rfind("ERR:", 0) == 0, "wum.audio.voice is read-only");
+
+    ExpectEq(Eval("voa", "local t = wum.audio.voice.lines('VOFAKE'); return r(#t, t[1].name, t[1].seconds, t[2].name, t[2].seconds)"),
+             "2,Nooo_01,0.5,taunt 2,0.25", "lines: names verbatim and seconds, bank name in any case");
+    ExpectEq(Eval("voa", "return r(wum.audio.voice.lines('vonone'))"), "nil,unknown bank", "lines: unknown bank");
+    ExpectEq(Eval("voa", "return r(wum.audio.voice.lines('vobroken'))"), "nil,unreadable bank", "lines: unreadable bank");
+    Expect(Eval("voa", "return wum.audio.voice.lines(nil)").rfind("ERR:", 0) == 0, "lines: the bank must be a string");
+
+    ExpectEq(Eval("voa", "h = wum.audio.voice.load('vofake', 'nooo_01'); return math.type(h)"), "integer", "load: a handle");
+    ExpectEq(Eval("voa", "return tostring(wum.audio.voice.load('vofake', 'Nooo_01') == h)"), "true", "load: the same line, the same handle");
+    ExpectEq(Eval("voa", "return r(wum.audio.voice.load('vofake', 'nope'))"), "nil,unknown line", "load: unknown line");
+    ExpectEq(Eval("voa", "return r(wum.audio.voice.load('vox', 'nope'))"), "nil,unknown bank", "load: unknown bank");
+    Expect(Eval("voa", "return wum.audio.voice.load('vofake')").rfind("ERR:", 0) == 0, "load: the line must be a string");
+
+    // cut: a new handle, the same for the same arguments, errors as nil, reason.
+    ExpectEq(Eval("voa", "c = wum.audio.cut(h, 0.1, 0.2); return r(math.type(c), c ~= h, wum.audio.cut(h, 0.1, 0.2) == c)"),
+             "integer,true,true", "cut: a new handle, stable for the same arguments");
+    ExpectEq(Eval("voa", "return r(wum.audio.cut(h, 0.6, 1))"), "nil,empty cut", "cut: past the end");
+    ExpectEq(Eval("voa", "return r(wum.audio.cut(9999, 0, 1))"), "nil,unknown sound", "cut: unknown handle");
+    ExpectEq(Eval("voa", "return r(math.type(wum.audio.cut(h, 0, 0.1, 0.5)))"), "integer", "cut: an explicit fade");
+    Expect(Eval("voa", "return wum.audio.cut(h, 'a', 1)").rfind("ERR:", 0) == 0, "cut: from must be a number");
+    Expect(Eval("voa", "return wum.audio.cut(h, 0, 1, 'x')").rfind("ERR:", 0) == 0, "cut: fade must be a number");
+    const std::string h = Eval("voa", "return h");
+    ExpectEq(Eval("vob", "return r(wum.audio.cut(" + h + ", 0, 0.1))"), "nil,unknown sound", "cut: another mod's handle is unknown");
+
+    // set: a playing voice of this mod; volume and pitch clamped as for play.
+    ExpectEq(Eval("voa", "v = wum.audio.play(c); return r(wum.audio.set(v, {volume = 5, pitch = 0.1}))"), "true", "set: own voice");
+    Expect(!fake::g_audioVoices.empty(), "a voice plays");
+    if (!fake::g_audioVoices.empty()) {
+        const auto& pv = fake::g_audioVoices.rbegin()->second;
+        Expect(pv.opts.volume == 2.0f && pv.opts.pitch == 0.5f, "set: clamped to 2 and 0.5");
+        ExpectEq(Eval("voa", "return r(wum.audio.set(v, {pitch = 0/0}))"), "true", "set: a NaN pitch is ignored");
+        Expect(pv.opts.pitch == 0.5f, "set: NaN keeps the pitch");
+        ExpectEq(Eval("voa", "return r(wum.audio.set(v, {volume = 0.3}))"), "true", "set: volume only");
+        Expect(std::fabs(pv.opts.volume - 0.3f) < 1e-6f && pv.opts.pitch == 0.5f, "set: volume applied, pitch kept");
+    }
+    const std::string v = Eval("voa", "return v");
+    ExpectEq(Eval("vob", "return r(wum.audio.set(" + v + ", {volume = 1}))"), "false", "set: another mod's voice");
+    ExpectEq(Eval("voa", "return r(wum.audio.set(9999, {}))"), "false", "set: unknown voice");
+    Expect(Eval("voa", "return wum.audio.set(v)").rfind("ERR:", 0) == 0, "set: opts must be a table");
+    Expect(Eval("voa", "return wum.audio.set(v, {volume = 'x'})").rfind("ERR:", 0) == 0, "set: volume must be a number");
+
+    // unload: frees one clip; the voice playing it is left alone.
+    ExpectEq(Eval("voa", "return r(wum.audio.unload(c), wum.audio.unload(c), wum.audio.unload(-1))"), "true,false,false",
+             "unload: once, then unknown");
+    ExpectEq(Eval("voa", "return r(wum.audio.play(c))"), "nil,unknown sound", "an unloaded handle does not play");
+    ExpectEq(Eval("voa", "return r(wum.audio.set(v, {volume = 1}))"), "true", "a voice of an unloaded clip plays on");
+    ExpectEq(Eval("vob", "return r(wum.audio.unload(" + h + "))"), "false", "unload: another mod's handle");
+    Expect(Eval("voa", "return wum.audio.unload('x')").rfind("ERR:", 0) == 0, "unload: the handle must be a number");
+    sandbox::UnloadMod("voa");
+    sandbox::UnloadMod("vob");
+}
+
 void TestMusic() {
     ExpectEq(Eval(nullptr, "return type(wum.audio.music.suppress)"), "function", "wum.audio.music exists");
     Expect(Eval(nullptr, "wum.audio.music.suppress = nil").rfind("ERR:", 0) == 0, "wum.audio.music is read-only");
     TestMusicApi();
+    TestVoiceApi();
 }
 

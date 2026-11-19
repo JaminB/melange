@@ -205,6 +205,7 @@ World MakeWorld() {
     auto worm = [&](int slot, const char* name, bool active, uint8_t team, uint16_t energy, uint32_t phys, int32_t weapon) {
         Block& c = Container(wh.At(), slot, w.wormVt, 0x164);
         c.Put<uintptr_t>(0xb0, name ? Str(name) : 0);
+        if (slot == 0) c.Put<uintptr_t>(0xb4, Str("voScot"));
         c.Put<uint8_t>(0x124, active);
         c.Put<uint8_t>(0x127, team);
         c.Put<uint8_t>(0x128, static_cast<uint8_t>(slot % 4));
@@ -228,6 +229,8 @@ World MakeWorld() {
     auto team = [&](int slot, const char* name, bool active, bool ai) {
         Block& c = Container(th.At(), slot, w.teamVt, 0x78);
         c.Put<uintptr_t>(0x14, name ? Str(name) : 0);
+        if (slot == 0) c.Put<uintptr_t>(0x20, Str("voclassi"));
+        if (slot == 1) c.Put<uintptr_t>(0x20, Str("Speech\\voRussian.fsb"));
         c.Put<uint8_t>(0x68, active);
         c.Put<uint8_t>(0x6a, static_cast<uint8_t>(slot + 2));
         c.Put<uint8_t>(0x6c, static_cast<uint8_t>(slot));
@@ -278,6 +281,8 @@ void TestSnapshot() {
 
     Expect(s.teamCount == 2, "two teams (the empty inactive slot skipped)");
     ExpectEq(s.teams[1].name, "Fremen \xC3\xA9", "team name converted to UTF-8");
+    ExpectEq(s.teams[0].voice, "voclassi", "team voice from SfxBankName (+0x20)");
+    ExpectEq(s.teams[1].voice, "voRussian", "team voice: path and extension dropped");
     Expect(s.teams[1].slot == 1 && s.teams[1].ai && !s.teams[1].local && s.teams[1].colour == 3 && s.teams[1].alliance == 1 &&
                s.teams[1].roundsWon == 1 && s.teams[1].score == 2468,
            "team fields");
@@ -286,6 +291,8 @@ void TestSnapshot() {
     Expect(a.slot == 0 && a.alive && a.health == 100 && a.physicsState == 6 && a.weapon == 1, "worm 0 fields");
     Expect(a.pos.x == 0.f && a.pos.y == 0.f && a.pos.z == -5.f && a.vel.z == 0.5f, "non-finite coordinate reads as 0");
     Expect(a.yaw == 6.25f, "yaw read from +0x90, unwrapped");
+    ExpectEq(a.voice, "voScot", "worm voice from its SfxBankName (+0xb4)");
+    ExpectEq(s.worms[1].voice, "", "no worm voice: empty");
     const gs::Worm& b = s.worms[1];
     Expect(b.slot == 1 && b.active && !b.alive && b.physicsState == 8 && b.weapon == -1 && b.health == 54,
            "drowning worm is not alive; weapon 67 is none");

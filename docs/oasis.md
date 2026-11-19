@@ -401,8 +401,9 @@ client asks for; nothing is ever written. The readers need build #1077 and `[Gam
   windDir, waterLevel, turnsStarted, suddenDeath, theme}` (times in ms, `-1` for no team or worm, wind direction in
   radians). `turnsStarted` and `suddenDeath` come from the engine's message counters for this match. `attract` is true
   while the menu's attract demo runs, whose match also reports `inMatch`.
-- `teams[]`: `{slot, name, active, ai, local, colour, alliance, roundsWon, score}`.
-- `worms[]`: `{slot, team, posInTeam, name, active, alive, health, physicsState, weapon, pos, vel}`; positions are
+- `teams[]`: `{slot, name, active, ai, local, colour, alliance, roundsWon, score, voice}` (`voice`, the speech bank such as `"voclassi"`, since 0.17 and only when it was read).
+- `worms[]`: `{slot, team, posInTeam, name, active, alive, health, physicsState, weapon, pos, vel, voice}` (`voice`, the
+  worm's speech bank, since 0.17 and only when it was read); positions are
   world units with +Y up, `vel` is the engine's raw value in world units per millisecond of game time (Lua's
   `wum.game.worms()` gives it per second), `weapon` is `-1` for none.
 - Outside a match `teams` and `worms` are empty. `kind` is one of `Worm`, `Projectile`, `Crate`, `Barrel`, `Other`;

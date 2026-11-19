@@ -1156,6 +1156,7 @@ void TestGame() {
     s.teams[0].slot = 1;
     s.teams[0].active = s.teams[0].ai = true;
     strcpy(s.teams[0].name, "Sandworms");
+    strcpy(s.teams[0].voice, "voclassi");
     s.wormCount = 2;
     s.worms[0] = {};
     s.worms[0].slot = 5;
@@ -1189,6 +1190,10 @@ void TestGame() {
     s.worms[0].weapon = 1;
     ExpectEq(Eval(nullptr, "local t = wum.game.teams() return #t, t[1].slot, t[1].name, t[1].active, t[1].ai, t[1][\"local\"]"),
              "1\t1\tSandworms\ttrue\ttrue\tfalse", "teams fields");
+    ExpectEq(Eval(nullptr, "return wum.game.teams()[1].voice"), "voclassi", "teams voice (0.17)");
+    s.teams[0].voice[0] = 0;
+    ExpectEq(Eval(nullptr, "return tostring(wum.game.teams()[1].voice)"), "nil", "no voice when it was not read");
+    strcpy(s.teams[0].voice, "voclassi");
     ExpectEq(Eval(nullptr, "return wum.game.activeWorm()"), "5", "active worm slot");
     ExpectEq(Eval(nullptr, "return wum.game.theme()"), "nil", "no theme before the level reports one");
     strcpy(s.match.theme, "SPACE");

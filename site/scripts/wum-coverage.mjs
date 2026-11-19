@@ -32,6 +32,8 @@ const HAND_MAP = {
   'src/lua/sandbox.cpp:kRepl': null,
   // wum.audio.music, a nested namespace (three-level names are outside this check; `wum.audio.music` itself is covered).
   'src/lua/wum_audio.cpp:kMusic': null,
+  // wum.audio.voice (Melange 0.17), nested the same way.
+  'src/lua/wum_audio.cpp:kVoice': null,
   // Methods of the userdata that wum.media and wum.peer return (player:play(), channel:send(), ...), documented with
   // their objects, not wum.* functions.
   'src/lua/wum_media.cpp:kPlayer': null,

@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "audio/bank_name.h"
 #include "game/state/gamestate_internal.h"
 
 namespace melange::gamestate::detail {
@@ -253,6 +254,10 @@ void FillSnapshot(const Layout& l, const Engine& e, const MatchInfo& m, Snapshot
         t.ai = Rd<uint8_t>(c + 0x6e) != 0;
         t.local = Rd<uint8_t>(c + 0x75) != 0;
         t.score = static_cast<int32_t>(Rd<uint32_t>(c + 0x48));
+        char bank[64];
+        ReadCString(Rd<uintptr_t>(c + 0x20), bank, sizeof bank);
+        const std::string voice = ::melange::audio::fsb::NormalizeBankName(bank);
+        memcpy(t.voice, voice.c_str(), voice.size() + 1);
         out->teams[out->teamCount++] = t;
     }
     for (int i = 0; i < 16; ++i) {
@@ -275,6 +280,11 @@ void FillSnapshot(const Layout& l, const Engine& e, const MatchInfo& m, Snapshot
         w.vel = ReadVec(c + 0x50);
         w.yaw = Finite(Rd<float>(c + 0x90));
         w.aim = Finite(Rd<float>(c + 0xd0));
+        // the bank the game speaks this worm with; the team's own SfxBankName is empty in a match (seen in build #1077)
+        char wbank[64];
+        ReadCString(Rd<uintptr_t>(c + 0xb4), wbank, sizeof wbank);
+        const std::string wvoice = ::melange::audio::fsb::NormalizeBankName(wbank);
+        memcpy(w.voice, wvoice.c_str(), wvoice.size() + 1);
         out->worms[out->wormCount++] = w;
     }
 }

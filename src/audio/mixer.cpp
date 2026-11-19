@@ -203,6 +203,12 @@ void Mixer::SetVolume(uint32_t id, float volume) {
     if (it != d_->playing.end() && it->second.voice && !it->second.stopping) it->second.voice->SetVolume(volume);
 }
 
+void Mixer::SetPitch(uint32_t id, float ratio) {
+    auto it = d_->playing.find(id);
+    if (it == d_->playing.end() || !it->second.voice || it->second.stopping) return;
+    it->second.voice->SetFrequencyRatio(ratio < 0.5f ? 0.5f : (ratio > kMaxPitch ? kMaxPitch : ratio));
+}
+
 void Mixer::Stop(uint32_t id) {
     auto it = d_->playing.find(id);
     if (it == d_->playing.end() || it->second.stopping) return;

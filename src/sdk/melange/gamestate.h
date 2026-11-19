@@ -17,12 +17,14 @@ struct Worm {
     float yaw;                        // facing angle, radians about +Y, unwrapped; facing = (sin, 0, cos)
     char name[32];
     float aim;                        // aim pitch, radians (container +0xd0; 0.16)
+    char voice[33];                   // speech bank (the worm's SfxBankName, +0xb4), e.g. "voclassi"; "" if unreadable (0.17)
 };
 struct Team {
     uint8_t slot, colour, alliance, roundsWon;
     bool active, ai, local;
     int32_t score;
     char name[32];
+    char voice[33];                   // speech bank (SfxBankName, container +0x20), e.g. "voclassi"; "" if unreadable (0.17)
 };
 struct Match {
     bool inMatch, online;
