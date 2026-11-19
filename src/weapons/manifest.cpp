@@ -12,10 +12,15 @@ namespace {
 struct Base {
     const char* name;
     int id;
+    const char* cls;  // the container class `set` is checked against
 };
+// The Bat (0.16): the melee entity takes its container from the name slot like a payload weapon does, MeleeType and
+// IsAimedWeapon come from the container, and the one name compare in its code (0x567f50, the stats id of a hit) only
+// files a clone's hits under "other weapon" (docs/weapons.md, "Melee clones").
 constexpr Base kBases[] = {
-    {"kWeaponBazooka", 1}, {"kWeaponGrenade", 2}, {"kWeaponHolyHandGrenade", 6}, {"kWeaponBananaBomb", 7},
-    {"kWeaponGasCanister", 16},
+    {"kWeaponBazooka", 1, kContainerClass},         {"kWeaponGrenade", 2, kContainerClass},
+    {"kWeaponHolyHandGrenade", 6, kContainerClass}, {"kWeaponBananaBomb", 7, kContainerClass},
+    {"kWeaponGasCanister", 16, kContainerClass},    {"kWeaponBaseballBat", 10, kMeleeContainerClass},
 };
 
 std::vector<CloneDecl> g_frozen;
@@ -48,6 +53,19 @@ bool IsFreeCell(int c) {
     for (int f : kFreeCells)
         if (f == c) return true;
     return false;
+}
+
+const TakeableCell* Takeable(int c) {
+    for (const auto& t : kTakeableCells)
+        if (t.cell == c) return &t;
+    return nullptr;
+}
+
+std::string CellList() {
+    std::string s;
+    for (int f : kFreeCells) s += (s.empty() ? "" : ", ") + std::to_string(f);
+    for (const auto& t : kTakeableCells) s += ", " + std::to_string(t.cell) + " (with \"replaces\": \"" + t.weapon + "\")";
+    return s;
 }
 
 bool CheckValue(const spice::WeaponSet& s, FieldType t, SetValue* out, std::string* why) {
@@ -108,6 +126,19 @@ const char* BaseName(int id) {
     return nullptr;
 }
 
+const char* BaseClass(int id) {
+    for (auto& b : kBases)
+        if (b.id == id) return b.cls;
+    return nullptr;
+}
+
+bool IsMeleeBase(int id) { return id == 10; }
+
+int TakenId(int cell) {
+    const TakeableCell* t = Takeable(cell);
+    return t ? t->id : -1;
+}
+
 bool ValidName(const std::string& n) {
     if (n.size() < 10 || n.size() > 48 || n.compare(0, 7, "kWeapon") != 0) return false;
     if (!(n[7] >= 'A' && n[7] <= 'Z')) return false;
@@ -125,7 +156,7 @@ std::vector<CloneDecl> Parse(const spice::Manifest& m, std::vector<Error>* errs)
         ok = false;
     };
     if (!m.weapons.empty() && !m.content) fail("weapons", "requires kind: \"content\"");
-    if (m.weapons.size() > static_cast<size_t>(kMaxClones)) fail("weapons", "at most 3 weapons");
+    if (m.weapons.size() > static_cast<size_t>(kMaxClones)) fail("weapons", "at most " + std::to_string(kMaxClones) + " weapons");
     for (const auto& w : m.weapons) {
         CloneDecl d;
         d.mod = m.id;
@@ -138,10 +169,17 @@ std::vector<CloneDecl> Parse(const spice::Manifest& m, std::vector<Error>* errs)
             if (o.name == w.name) fail(tag, "declared twice");
         d.baseId = BaseId(w.base);
         if (d.baseId < 0) fail(tag, "base '" + w.base + "' is not clonable in this version");
-        if (w.cell >= 0 && !IsFreeCell(w.cell)) fail(tag, "cell must be 29, 39 or 40");
+        const TakeableCell* take = Takeable(w.cell);
+        if (w.cell >= 0 && !IsFreeCell(w.cell) && !take) fail(tag, "cell must be " + CellList());
+        if (take && w.replaces != take->weapon)
+            fail(tag, "cell " + std::to_string(w.cell) + " holds " + take->weapon + ": take it with \"replaces\": \"" +
+                          take->weapon + "\"");
+        if (!w.replaces.empty() && !take)
+            fail(tag, "replaces needs the cell it takes (" + CellList() + ")");
         for (auto& o : out)
             if (w.cell >= 0 && o.cell == w.cell) fail(tag, "cell " + std::to_string(w.cell) + " used twice");
         d.cell = w.cell;
+        d.replaces = take ? w.replaces : std::string();
         if (!w.bank.empty() && (!SafeRel(w.bank) || !EndsWithI(w.bank, ".xom")))
             fail(tag, "bank must be a relative .xom path under assets/data/");
         d.bank = w.bank;
@@ -155,9 +193,10 @@ std::vector<CloneDecl> Parse(const spice::Manifest& m, std::vector<Error>* errs)
         d.hudIcon = w.hudIcon;
         d.text = {w.textName, w.textHelp};
         for (const auto& s : w.set) {
-            const FieldType t = fields::SchemaType(kContainerClass, s.field.c_str());
+            const char* cls = d.baseId >= 0 ? BaseClass(d.baseId) : kContainerClass;
+            const FieldType t = fields::SchemaType(cls, s.field.c_str());
             if (t == FieldType::None) {
-                fail(tag, "set." + s.field + " is not a settable field of " + kContainerClass);
+                fail(tag, "set." + s.field + " is not a settable field of " + cls);
                 continue;
             }
             SetValue v;
@@ -179,7 +218,12 @@ std::vector<CloneDecl> Assign(const std::vector<std::vector<CloneDecl>>& perMod,
     for (const auto& mod : perMod) {
         if (mod.empty()) continue;
         std::string why;
-        if (acc.size() + mod.size() > static_cast<size_t>(kMaxClones)) why = "no free panel cell left (3 clones in total)";
+        // A mod without a taken cell fits only the free cells; the takeable ones are never handed out unasked.
+        size_t free = 0, taking = 0;
+        for (const auto& a : acc) (a.replaces.empty() ? free : taking) += 1;
+        for (const auto& d : mod) (d.replaces.empty() ? free : taking) += 1;
+        if (free > static_cast<size_t>(kFreeCellCount) || free + taking > static_cast<size_t>(kMaxClones))
+            why = "no free panel cell left (" + std::to_string(kFreeCellCount) + " free cells in total)";
         for (const auto& d : mod)
             for (const auto& a : acc) {
                 if (why.empty() && a.name == d.name) why = d.name + " is already declared by " + a.mod;

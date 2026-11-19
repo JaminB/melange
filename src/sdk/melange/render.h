@@ -30,6 +30,12 @@ enum class OverrideResult : uint8_t { Ok, Busy, Invalid, Unavailable };
 OverrideResult SetCameraOverride(const void* owner, const CameraOverride& o, int frames = 0);
 bool ClearCameraOverride(const void* owner);  // nullptr: any owner; true if one was cleared
 bool CameraOverridden();                       // an override is set (it draws from the next Render on)
+// The engine's own HUD (worm names and energy, team bars, the turn timer, the wind) left out of the picture for the
+// next `frames` frames (1..600) after the last call, for cut-scenes: the scene is copied aside after the world's
+// post-FX and back after the engine HUD, so mods' hud draws and the Final post-FX still run (MirageNoHud). Render
+// only; the game and Wormsign see nothing. Any owner hiding it hides it. False when MirageNoHud is not installed.
+bool HideEngineHud(const void* owner, int frames);
+void ClearHideEngineHud(const void* owner);  // nullptr: every owner
 // Pixels, origin top-left of the window; depth in [0,1] as the depth buffer stores it. False if behind the camera.
 bool WorldToScreen(const float world[3], float* x, float* y, float* depth);
 void WindowSize(int* w, int* h);

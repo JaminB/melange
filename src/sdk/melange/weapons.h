@@ -3,8 +3,14 @@
 #include <cstdint>
 namespace melange::weapons {
 constexpr int32_t kVidBase = 0x100;          // virtual id = kVidBase + k; never in 0..0x44
-constexpr int kMaxClones = 3;                // v1: the free cells only
-constexpr int kFreeCells[kMaxClones] = {29, 39, 40};
+constexpr int kFreeCellCount = 3;
+constexpr int kFreeCells[kFreeCellCount] = {29, 39, 40};  // the panel's empty cells
+// A vanilla cell a clone may take over, only when its manifest entry says so ("cell": 41, "replaces": "kUtilityBinoculars").
+// While such a clone is live the item is off the panel and a selection of it is refused (registry_core.cpp).
+struct TakeableCell { int cell; int32_t id; const char* weapon; };
+constexpr TakeableCell kTakeableCells[] = {{41, 43, "kUtilityBinoculars"}};
+constexpr int kTakeableCount = static_cast<int>(sizeof kTakeableCells / sizeof kTakeableCells[0]);
+constexpr int kMaxClones = kFreeCellCount + kTakeableCount;  // 0.16: the free cells and the takeable ones
 
 struct CloneInfo {
     uint16_t k; int32_t vid, base;           // base: WeaponNameEnum id
@@ -18,6 +24,9 @@ bool Enabled();                              // [Weapons] Enabled and every site
 int Declared(CloneInfo* out, int max);       // from enabled content mods, frozen per launch, k order; returns the total
 bool Live();                                 // this match has clones (sim mods allowed and every declared clone created)
 int ActiveClone();                           // k held by the active worm this turn, -1 none (sim state)
+// The clone the worm in `slot` wields (its selected weapon is `weaponId`, a base id): the active worm's ActiveClone() when
+// that clone's base is weaponId, else nullptr. The returned name lives as long as the registry.
+const char* WieldedCloneName(int slot, int32_t weaponId, int activeSlot);
 bool IsVid(int32_t v);
 int32_t BaseOf(int32_t v);                   // a vid's base id (defensive: an unknown vid maps to kWeaponBazooka, logged)
 

@@ -38,6 +38,21 @@ int g_w = 0, g_h = 0;
 uint64_t g_saved = ~0ull;  // the frame whose scene was copied aside at PostWorld
 uint64_t g_hidden = 0;     // frames drawn without the HUD (log)
 bool g_warned = false;
+bool g_installed = false;
+
+// wum.render.hideHud: the frame up to which each owner (a mod) hides the engine HUD. Main thread.
+struct HideReq {
+    const void* owner = nullptr;
+    uint64_t until = 0;
+};
+constexpr int kMaxHideOwners = 16;
+HideReq g_hide[kMaxHideOwners];
+
+bool ModHidden(uint64_t frame) {
+    for (const HideReq& r : g_hide)
+        if (r.owner && r.until >= frame) return true;
+    return false;
+}
 
 template <class T>
 void Proc(T& fn, const char* name) {
@@ -92,7 +107,7 @@ bool Ensure(int w, int h) {
 
 void OnStage(render::Stage stage, void*) {
     const uint64_t f = events::FrameCount();
-    if (!draw::HiddenAt(f)) return;
+    if (!draw::HiddenAt(f) && !ModHidden(f)) return;
     if (stage == render::Stage::Hud && g_saved != f) return;
     const render::SceneTargets t = render::GetSceneTargets();
     if (!t.valid || !t.fbo || t.w <= 0 || t.h <= 0 || !Load()) return;
@@ -114,7 +129,7 @@ void OnStage(render::Stage stage, void*) {
         g_p.Bind(kDrawFb, t.fbo);
         g_p.Blit(0, 0, t.w, t.h, 0, 0, t.w, t.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
         if (glGetError() == GL_NO_ERROR && (++g_hidden == 1 || g_hidden % 100 == 0))
-            LOG_INFO("[nohud] clean shot: frame %llu drawn without the engine HUD (%llu so far)", static_cast<unsigned long long>(f),
+            LOG_INFO("[nohud] frame %llu drawn without the engine HUD (%llu so far; a clean shot or wum.render.hideHud)", static_cast<unsigned long long>(f),
                      static_cast<unsigned long long>(g_hidden));
     }
     g_p.Bind(kReadFb, static_cast<GLuint>(read));
@@ -133,9 +148,40 @@ class MirageNoHud final : public melange::Module {
         const bool a = render::AddStageCallback(render::Stage::PostWorld, &OnStage, nullptr, (1 << 20) + 1) != 0;
         const bool b = render::AddStageCallback(render::Stage::Hud, &OnStage, nullptr, -(1 << 20)) != 0;
         if (!a || !b) LOG_WARN("[nohud] stage callbacks not added (PostWorld %d, Hud %d): clean shots keep the engine HUD", a, b);
-        return a && b;
+        g_installed = a && b;
+        return g_installed;
     }
 };
 MELANGE_MODULE(MirageNoHud);
 }  // namespace
 }  // namespace melange::mirage::nohud
+
+namespace melange::render {
+// A request for n frames covers the frame being built now (a mod's callback runs before that frame's engine HUD) and
+// the n - 1 after it. Main thread.
+bool HideEngineHud(const void* owner, int frames) {
+    using namespace melange::mirage::nohud;
+    if (!g_installed || !owner) return false;
+    if (frames < 1) frames = 1;
+    if (frames > 600) frames = 600;
+    const uint64_t now = events::FrameCount();
+    const uint64_t until = now + static_cast<uint64_t>(frames - 1);
+    HideReq* slot = nullptr;
+    for (HideReq& r : g_hide) {
+        if (r.owner == owner) {
+            r.until = until;
+            return true;
+        }
+        if (!slot && (!r.owner || r.until < now)) slot = &r;
+    }
+    if (!slot) return false;
+    slot->owner = owner;
+    slot->until = until;
+    return true;
+}
+void ClearHideEngineHud(const void* owner) {
+    using namespace melange::mirage::nohud;
+    for (HideReq& r : g_hide)
+        if (!owner || r.owner == owner) r = HideReq{};
+}
+}  // namespace melange::render

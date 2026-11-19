@@ -69,6 +69,7 @@ bool WriteAtomic(const std::wstring& path, const std::string& bytes, std::string
         return false;
     }
     WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+    config::Invalidate();
     return true;
 }
 

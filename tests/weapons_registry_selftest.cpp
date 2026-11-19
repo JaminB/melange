@@ -718,6 +718,56 @@ void ThreeClones() {
     Expect(e.Slot(1) == "kWeaponBazooka" && e.Slot(2) == "kWeaponGrenade" && e.CellId(40) == core::kUndefined, "all restored");
 }
 
+// 0.16: a fourth clone on a taken vanilla cell (41, kUtilityBinoculars), only when its declaration says "replaces".
+void TakenCell() {
+    auto withBinoculars = [](Fake& e) {
+        e.Put32(core::kPanel + 8 * 41, 43);
+        e.Put32(core::kPanel + 8 * 41 + 4, 0x0803);
+    };
+    {
+        Fake e;
+        withBinoculars(e);
+        core::Registry r(e);
+        auto a = Decl("kWeaponOne", "kWeaponBazooka", 1, 29, 0);
+        auto b = Decl("kWeaponTwo", "kWeaponGrenade", 2, 39, 1);
+        auto c = Decl("kWeaponThree", "kWeaponBazooka", 1, 40, 2);
+        auto d = Decl("kWeaponFour", "kWeaponGrenade", 2, 41, 3);
+        d.replaces = "kUtilityBinoculars";
+        r.Configure({a, b, c, d});
+        std::string why;
+        Expect(r.Count() == 4 && r.Init(&why), "four clones, one on the taken cell: " + why);
+        Expect(e.CellId(41) == 0x103 && e.CellIcon(41) == 0x0002, "cell 41 = {vid k3, its base's icon}");
+        Expect(r.Select(0x103) == 2 && r.Active() == 3 && e.Slot(2) == "kWeaponFour", "the taken cell's clone selects");
+        Expect(r.Refuses(43) && r.Active() == 3 && e.Slot(2) == "kWeaponFour",
+               "a selection of the displaced Binoculars is refused, the clone stays held");
+        Expect(!r.Refuses(6) && !r.Refuses(0x103) && r.Select(6) == 6 && r.Active() == -1, "any other weapon selects as before");
+        r.MatchEnd();
+        Expect(e.CellId(41) == 43 && e.CellIcon(41) == 0x0803 && e.CellId(40) == core::kUndefined,
+               "match end: the Binoculars are back in cell 41, the free cells empty");
+        Expect(!r.Refuses(43) && r.Select(43) == 43, "outside a live match the Binoculars select");
+    }
+    {
+        Fake e;  // cell 41 does not hold the Binoculars (another build, or another mod's write)
+        core::Registry r(e);
+        auto d = Decl("kWeaponFour", "kWeaponGrenade", 2, 41, 0);
+        d.replaces = "kUtilityBinoculars";
+        r.Configure({d});
+        std::string why;
+        Expect(!r.Init(&why) && why.find("does not hold kUtilityBinoculars") != std::string::npos && !r.Live(),
+               "a taken cell that does not hold its item refuses the clones: " + why);
+        Expect(e.CellId(41) == 5, "and the cell is untouched");
+    }
+    {
+        Fake e;
+        withBinoculars(e);
+        core::Registry r(e);
+        r.Configure({Decl("kWeaponFour", "kWeaponGrenade", 2, 41, 0)});  // no "replaces"
+        std::string why;
+        Expect(!r.Init(&why) && why.find("is not free") != std::string::npos && e.CellId(41) == 43,
+               "a vanilla cell is never taken unasked: " + why);
+    }
+}
+
 void TextAndIcons() {
     Fake e;
     core::Registry r(e);
@@ -1043,6 +1093,7 @@ int wmain(int argc, wchar_t** argv) {
     Refusals();
     Banks();
     ThreeClones();
+    TakenCell();
     TextAndIcons();
     FromManifest();
     printf("weapons_registry_selftest: %d passed, %d failed\n", g_pass, g_fail);

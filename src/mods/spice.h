@@ -13,7 +13,7 @@ struct Setting { std::string key, type, label, def; double min = 0, max = 0; std
 // One entry of the "weapons" array, checked for shape only; weapons/manifest.cpp checks names, bases and field types.
 struct WeaponSet { std::string field; enum Kind { Number, Boolean, String } kind = Number; double number = 0;
                    bool boolean = false; std::string string; int line = 0; };
-struct Weapon { std::string name, base, bank, panelIcon, hudIcon, textName, textHelp; int cell = -1;
+struct Weapon { std::string name, base, bank, panelIcon, hudIcon, textName, textHelp, replaces; int cell = -1;
                 std::vector<WeaponSet> set; int line = 0; };
 // One entry of "weaponText": a vanilla weapon's new panel name and help text, checked for shape only;
 // weapons/manifest.cpp checks it against the clone names of every mod. An empty name or help means "not renamed".

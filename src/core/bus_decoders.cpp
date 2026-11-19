@@ -103,6 +103,10 @@ void DecPayloadEvent(const MessageView& m, JsonOut& o) {
     Vec3Field(m, 0x10, "pos", o);
     Vec3Field(m, 0x1c, "vel", o);
 }
+void DecLandNewShape(const MessageView& m, JsonOut& o) {
+    FloatField(m, 0x08, "radius", o);
+    Vec3Field(m, 0x0c, "pos", o);
+}
 void DecExplosion(const MessageView& m, JsonOut& o) {
     Vec3Field(m, 0x08, "damageEpicentre", o);
     Vec3Field(m, 0x14, "impulseEpicentre", o);
@@ -133,7 +137,7 @@ constexpr Builtin kBuiltins[] = {
     {0x8862a0, "VectorUintMessage", &DecVectorUint},
     {0x85be94, "PayloadEventMessage", &DecPayloadEvent},
     {0x854184, "ExplosionMessage", &DecExplosion},
-    {0x81c444, "LandNewShapeMessage", nullptr},
+    {0x81c444, "LandNewShapeMessage", &DecLandNewShape},
     {0x82c3e4, "ActingTriggerMsg", nullptr},
     {0x830eb0, "WormCommandMessage", nullptr},
     {0x854108, "DamageImpulseMessage", nullptr},

@@ -120,6 +120,8 @@ struct Clone {
     bool text = false, help = false, hud = false;
     bool created = false;  // registered in this launch, so a container by that name may be ours
     bool iconAsked = false;
+    int takenId = -1;            // a taken cell (decl.replaces): the vanilla id it held; -1 for a free cell
+    uint32_t cellWas[2] = {};    // the cell's {id, icon} before this match wrote it
 };
 
 class Registry {
@@ -135,6 +137,9 @@ public:
     void MatchEnd();
     void TurnEnded();
     int32_t Select(int32_t value);  // selection handler: the id to store in the worm's selected weapon
+    // A selection the panel handler must drop: the vanilla item of a cell a live clone took (logged). The game never
+    // offers it (its cell shows the clone); this catches one that arrives anyway, the same on every machine.
+    bool Refuses(int32_t value) const;
 
     // Hook helpers (no logging, no allocation).
     int32_t GuardId(int32_t id) const;

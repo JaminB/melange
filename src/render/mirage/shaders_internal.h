@@ -54,6 +54,9 @@ melange::shaders::TextureResult SetModTexture(const std::string& owner, const st
 void ForgetModTexture(unsigned tex);
 }  // namespace glsl
 
+// shaders.cpp: hooks cgGLBindProgram for MiragePose (pose.cpp), which needs every bind; true when hooked.
+bool RequireBindHook();
+
 // shaders_panel.cpp
 void RegisterPanel();
 }  // namespace melange::mirage::shaders

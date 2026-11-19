@@ -40,6 +40,7 @@
 #include "media/pack.h"
 #include "net/peerbus.h"
 #include "net/peerbus_api.h"
+#include "render/mirage/pose.h"
 
 namespace fake {
 struct Record {
@@ -340,10 +341,78 @@ bool ClearCameraOverride(const void* owner) {
     return true;
 }
 bool CameraOverridden() { return g_ovOwner != nullptr; }
+const void* g_hudOwner = nullptr;
+int g_hudFrames = 0;
+bool g_hudOk = true;
+bool HideEngineHud(const void* owner, int frames) {
+    if (!g_hudOk) return false;
+    g_hudOwner = owner;
+    g_hudFrames = frames;
+    return true;
+}
+void ClearHideEngineHud(const void* owner) {
+    if (!owner || owner == g_hudOwner) g_hudOwner = nullptr, g_hudFrames = 0;
+}
 bool WorldToScreen(const float*, float*, float*, float*) { return false; }
 void WindowSize(int* w, int* h) { *w = 1024, *h = 768; }
 Timing GetTiming() { return {}; }
 }  // namespace render
+namespace mirage::pose {
+const void* g_poseOwner[16] = {};
+logic::Spec g_spec{};
+logic::Body g_body{};
+logic::Clips g_clips{};
+int g_poseFrames = -1, g_copySlot = -1;
+logic::M4 g_head{};
+Result Set(const void* owner, int slot, const logic::Spec& s, const logic::Body* body, const logic::Clips* clips, int frames) {
+    if (slot < 0 || slot > 15) return Result::Invalid;
+    if (g_poseOwner[slot] && g_poseOwner[slot] != owner) return Result::Busy;
+    g_poseOwner[slot] = owner;
+    g_spec = s;
+    g_body = body ? *body : logic::Body{};
+    g_clips = clips ? *clips : logic::Clips{};
+    g_poseFrames = frames;
+    return Result::Ok;
+}
+bool Clear(const void* owner, int slot) {
+    bool any = false;
+    for (int i = 0; i < 16; ++i)
+        if ((slot < 0 || slot == i) && g_poseOwner[i] && (!owner || g_poseOwner[i] == owner)) g_poseOwner[i] = nullptr, any = true;
+    return any;
+}
+Result SetCopy(const void*, int slot, const logic::M4& head, int) {
+    g_copySlot = slot;
+    g_head = head;
+    return Result::Ok;
+}
+bool ClearCopy(const void*, int slot) {
+    const bool was = g_copySlot >= 0 && (slot < 0 || slot == g_copySlot);
+    if (was) g_copySlot = -1;
+    return was;
+}
+bool Bones(int slot, float out[logic::kBones][3], float neck[3], float feet[3]) {
+    if (slot != 2) return false;
+    for (int i = 0; i < logic::kBones; ++i) out[i][0] = static_cast<float>(i), out[i][1] = 1, out[i][2] = 2;
+    neck[0] = 4, neck[1] = 5, neck[2] = 6;
+    feet[0] = 7, feet[1] = 8, feet[2] = 9;
+    return true;
+}
+// A worm library of three clips: Base 20, HoldBat 31, HeadRotX 40 (any slot but 9, which is not drawn yet).
+int ClipId(int slot, const char* name) {
+    if (slot == 9) return -2;
+    if (!_stricmp(name, "Base")) return 20;
+    if (!_stricmp(name, "HoldBat")) return 31;
+    if (!_stricmp(name, "HeadRotX")) return 40;
+    return -1;
+}
+Caps Capabilities() {
+    Caps c;
+    c.body = c.clips = c.palette = c.copy = true;
+    return c;
+}
+const char* Status() { return "ok"; }
+uint32_t IdentifiedDraws() { return 12; }
+}  // namespace mirage::pose
 namespace gltrace {
 bool GpuTimerSupported() { return false; }
 GpuTime GetGpuTime(GpuRegion) { return {-1.0, false}; }
@@ -426,6 +495,12 @@ LandRayResult LandRay(const Vec3& a, const Vec3& b, LandHit* out) {
     return g_rayResult;
 }
 }  // namespace gamestate
+namespace weapons {  // the clone registry: one Bat clone held by the active worm when g_cloneOn
+bool g_cloneOn = false;
+const char* WieldedCloneName(int slot, int32_t weaponId, int activeSlot) {
+    return g_cloneOn && slot == activeSlot && weaponId == 10 ? "kWeaponGraveSpade" : nullptr;
+}
+}  // namespace weapons
 namespace sandbox {
 double NowSeconds() { return fake::g_clock; }
 void EngineSubscribe(const std::string& name, bool on) {
@@ -1105,6 +1180,13 @@ void TestGame() {
              "worm velocity in units per second (the engine's per-millisecond value x1000)");
     ExpectEq(Eval(nullptr, "local w = wum.game.worms()[2] return w.name, w.alive, w.weapon"), "Leto\tfalse\tnil",
              "a dead worm without a weapon");
+    ExpectEq(Eval(nullptr, "return wum.game.worms()[1].clone"), "nil", "no clone field for a vanilla weapon");
+    weapons::g_cloneOn = true;
+    s.worms[0].weapon = 10;
+    ExpectEq(Eval(nullptr, "local w = wum.game.worms() return w[1].weapon, w[1].clone, w[2].clone"), "10	kWeaponGraveSpade	nil",
+             "the active worm's clone by name, its base's id in weapon");
+    weapons::g_cloneOn = false;
+    s.worms[0].weapon = 1;
     ExpectEq(Eval(nullptr, "local t = wum.game.teams() return #t, t[1].slot, t[1].name, t[1].active, t[1].ai, t[1][\"local\"]"),
              "1\t1\tSandworms\ttrue\ttrue\tfalse", "teams fields");
     ExpectEq(Eval(nullptr, "return wum.game.activeWorm()"), "5", "active worm slot");
@@ -1420,6 +1502,75 @@ void TestMeshes() {
     sandbox::UnloadMod("msh2");
 }
 
+void TestWormPose() {
+    SetMod("pose", "");
+    SetMod("pose2", "");
+    Expect(sandbox::LoadMod("pose") && sandbox::LoadMod("pose2"), "pose mods load");
+    namespace mp = mirage::pose;
+    ExpectEq(Eval("pose", "return wum.render.wormPose(3, {frames = 7, root = {rot = {-90, 0, 0}, move = {0, 2, 0}},"
+                          " rightHand = {target = {1, 2, 3}}, head = {rot = {pitch = 10}}, hide = {head = 'stump'}})"),
+             "true", "a pose is set");
+    Expect(mp::g_poseOwner[3] && mp::g_poseFrames == 7 && mp::g_spec.root.on && mp::g_spec.root.rot[0] == -90 &&
+               mp::g_spec.root.move[1] == 2 && mp::g_spec.group[mp::logic::kRightHand].hasTarget &&
+               mp::g_spec.group[mp::logic::kRightHand].target[2] == 3 && mp::g_spec.group[mp::logic::kHead].rot[0] == 10 &&
+               mp::g_spec.stump && !mp::g_spec.group[mp::logic::kTail].on && mp::g_spec.attach == mp::logic::Attach::Keep,
+           "the spec reaches MiragePose");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(3, {})"), "false	busy", "another mod's pose is busy");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(5, {frames = 9})"), "true", "a pose with no edits (track only)");
+    Expect(mp::g_spec.Empty() && mp::g_poseFrames == 9, "a track-only spec is empty");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(5, {hide = {attachments = 'follow'}})"), "true", "attachments follow");
+    Expect(mp::g_spec.attach == mp::logic::Attach::Follow && !mp::g_spec.Empty(), "hide.attachments = follow reaches MiragePose");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(5, {hide = {head = 'stump', attachments = true}})"), "true", "hidden");
+    Expect(mp::g_spec.attach == mp::logic::Attach::Hide && mp::g_spec.stump, "hide.attachments = true hides");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(5, nil)"), "true", "cleared");
+    ExpectEq(Eval("pose2", "return wum.render.wormPose(3, nil)"), "false", "another mod cannot clear it");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(3, nil)"), "true", "the owner clears it");
+    ExpectEq(Eval("pose", "return wum.render.wormCopy(4, {pos = {10, 20, 30}, rot = {0, 90, 0}, frames = 5})"), "true",
+             "a head copy is set");
+    Expect(mp::g_copySlot == 4 && std::fabs(mp::g_head.m[12] - 10) < 1e-4f && std::fabs(mp::g_head.m[14] - 30) < 1e-4f,
+           "the copy's transform carries the neck to pos");
+    ExpectEq(Eval("pose", "local b = wum.render.wormBones(2) return b.wrist_right.x, b.main.y, wum.render.wormBones(1)"),
+             "26	1	nil", "wormBones names the bones");
+    ExpectEq(Eval("pose", "local b = wum.render.wormBones(2) return b.neck.z, b.feet.y"), "6	8", "wormBones adds neck and feet");
+    ExpectEq(Eval("pose", "return wum.render.wormPoseStatus()"), "ok	12", "status and the identified draw count");
+    ExpectEq(Eval("pose", "local c = wum.render.wormPoseCaps() return c.body, c.clips, c.palette, c.copy, c.hideAttachments"),
+             "true	true	true	true	false", "wormPoseCaps lists the layers");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(6, {body = {pitch = -90, heading = 45, move = {0, 4, 0}},"
+                          " clips = {{name = 'holdbat', time = 0.5, weight = 9}}, clipMode = 'base', sliders = {HeadRotX = 3}})"),
+             "true", "a body, clip and slider pose is set");
+    Expect(mp::g_body.on && mp::g_body.turn && mp::g_body.pitch == -90 && mp::g_body.absHeading && mp::g_body.yaw == 45 &&
+               !mp::g_body.absAt && mp::g_body.move[1] == 4 && mp::g_spec.Empty(),
+           "the body reaches MiragePose");
+    Expect(mp::g_clips.n == 1 && mp::g_clips.id[0] == 31 && mp::g_clips.time[0] == 0.5f && mp::g_clips.weight[0] == 5.f &&
+               mp::g_clips.base && mp::g_clips.baseId == 20 && mp::g_clips.sn == 1 && mp::g_clips.sid[0] == 40 &&
+               mp::g_clips.st[0] == 2.f,
+           "clips and sliders are resolved by name and clamped");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(6, {body = {at = {1, 2, 3}, yaw = 10}})"), "true", "an absolute body");
+    Expect(mp::g_body.absAt && mp::g_body.move[2] == 3 && !mp::g_body.absHeading && mp::g_body.yaw == 10 && !mp::g_clips.On(),
+           "body.at and a yaw delta");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(6, {clips = {{name = 'Dance'}}})"), "false	no clip Dance",
+             "an unknown clip is refused");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(6, {sliders = {Nope = 1}})"), "false	no clip Nope",
+             "an unknown slider is refused");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(9, {clips = {{name = 'HoldBat'}}, body = {pitch = 5}})"), "true",
+             "clips wait for the worm's library");
+    Expect(!mp::g_clips.On() && mp::g_body.pitch == 5, "the clips are dropped until the library is known");
+    ExpectEq(Eval("pose", "return wum.render.wormPose(6, nil), wum.render.wormPose(9, nil)"), "true	true", "cleared");
+    const char* bad[] = {"wum.render.wormPose(16, {})", "wum.render.wormPose(1.5, {})", "wum.render.wormPose(1, 5)",
+                         "wum.render.wormPose(1, {frames = 0})", "wum.render.wormPose(1, {root = 5})",
+                         "wum.render.wormPose(1, {hide = {head = 'gone'}})", "wum.render.wormPose(1, {hide = {head = 5}})",
+                         "wum.render.wormPose(1, {hide = 'stump'})", "wum.render.wormPose(1, {hide = {attachments = 'x'}})",
+                         "wum.render.wormCopy(1, {})", "wum.render.wormPose(1, {body = 5})",
+                         "wum.render.wormPose(1, {body = {pitch = 'x'}})", "wum.render.wormPose(1, {body = {yaw = 1, heading = 2}})",
+                         "wum.render.wormPose(1, {body = {move = {0, 0, 0}, at = {0, 0, 0}}})",
+                         "wum.render.wormPose(1, {clips = 5})", "wum.render.wormPose(1, {clips = {5}})",
+                         "wum.render.wormPose(1, {clips = {{time = 1}}})", "wum.render.wormPose(1, {clipMode = 'solo'})",
+                         "wum.render.wormPose(1, {sliders = {HeadRotX = 'x'}})"};
+    for (const char* code : bad) Expect(Eval("pose", code).rfind("ERR:", 0) == 0, std::string("raises: ") + code);
+    sandbox::UnloadMod("pose");
+    Expect(mp::g_poseOwner[3] == nullptr && mp::g_copySlot == -1, "unloading the mod clears its poses and copies");
+}
+
 void TestCameraOverride() {
     SetMod("cam", "");
     SetMod("cam2", "");
@@ -1470,6 +1621,21 @@ void TestCameraOverride() {
     ExpectEq(Eval("cam", "return wum.render.cameraOverride(nil), wum.render.cameraOverride()"), "true\tfalse",
              "nil clears the mod's own override once");
     ExpectEq(Eval("cam", "return wum.render.camera().overridden"), "false", "camera() after the clear");
+
+    // wum.render.hideHud (Melange 0.16)
+    render::g_hudOwner = nullptr;
+    ExpectEq(Eval("cam", "return wum.render.hideHud(4)"), "true", "hideHud hides the engine HUD");
+    Expect(render::g_hudOwner && render::g_hudFrames == 4, "hideHud passes the frames");
+    ExpectEq(Eval("cam", "return wum.render.hideHud(nil)"), "true", "hideHud(nil) ends it");
+    Expect(!render::g_hudOwner, "the mod's hiding is cleared");
+    ExpectEq(Eval("cam", "return wum.render.hideHud(1), wum.render.hideHud(false)"), "true	true", "false ends it too");
+    Expect(!render::g_hudOwner, "cleared by false");
+    render::g_hudOk = false;
+    ExpectEq(Eval("cam", "return wum.render.hideHud(3)"), "false	unavailable", "unavailable without MirageNoHud");
+    render::g_hudOk = true;
+    for (const char* code : {"wum.render.hideHud(601)", "wum.render.hideHud(-1)", "wum.render.hideHud(1.5)",
+                             "wum.render.hideHud('x')"})
+        Expect(Eval("cam", code).rfind("ERR:", 0) == 0, std::string("raises: ") + code);
     render::g_haveCam = false;
     ExpectEq(Eval("cam", "return wum.render.camera() == nil, wum.render.gameCamera() == nil"), "true\ttrue",
              "no camera outside rendering");
@@ -1771,6 +1937,7 @@ int main() {
         {"samples", TestSamples},
         {"game", TestGame},       {"match", TestMatch},     {"graphics", TestGraphics}, {"sprites", TestSprites},
         {"meshes", TestMeshes},   {"camera override", TestCameraOverride},
+        {"worm pose", TestWormPose},
         {"shader textures", TestShaderTextures},
         {"input", TestInput}, {"audio", TestAudio},
         {"owner events", TestOwnerEvents}, {"media", TestMedia}, {"peer", TestPeer}, {"mod input", TestModInput},

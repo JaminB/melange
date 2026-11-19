@@ -16,6 +16,7 @@ struct Worm {
     Vec3 vel;                         // the engine's value: world units per millisecond of game time (x1000 = per s)
     float yaw;                        // facing angle, radians about +Y, unwrapped; facing = (sin, 0, cos)
     char name[32];
+    float aim;                        // aim pitch, radians (container +0xd0; 0.16)
 };
 struct Team {
     uint8_t slot, colour, alliance, roundsWon;

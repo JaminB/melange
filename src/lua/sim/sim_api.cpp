@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "core/log.h"
+#include "lua/sim/sim_melee.h"
 #include "lua/sim/bridge_internal.h"
 #include "lua/sim/sim_internal.h"
 
@@ -528,6 +529,9 @@ void PushWum(int mod) {
     a.rawset(L, sim);
     a.pushstring(L, "weapons");
     PushWeapons(mod);
+    a.rawset(L, sim);
+    a.pushstring(L, "melee");
+    simmelee::PushTable(L, mod);
     a.rawset(L, sim);
     for (int i = 0; i < g_extraCount; ++i) SetFn(L, sim, g_extra[i].name, g_extra[i].fn, mod);
     a.rawset(L, wum);

@@ -32,6 +32,10 @@ bool AppReady();                                        // [0x96d1cc] is set
 // is not the vanilla one. The mesh is not looked up here: the caller checks it is loaded (assets::meshes::Describe).
 bool SetVehicleMesh(const char* vehicle, const char* name, std::string* err);
 void ClearVehicleMeshes();
+// kSelRefuse/kSelSkip: in WXWeaponPanelLogicEntity::HandleMessage 0x603b70, Weapon.DelayedPanelChanged's value is in
+// eax at kSelRefuse (esp at the handler's base, ebp the message, [esp+0x10] the message id that edi held); kSelSkip is
+// where the handler's own "no worm" branch (0x603cb7) goes: past the store into +0xf4 and the Weapon.Selected post.
+constexpr uintptr_t kSelRefuse = 0x603cce, kSelSkip = 0x603d8e;
 constexpr uintptr_t kNames = 0x90c920, kPanel = 0x920e58, kSelWrite = 0x603cdb, kSelLog = 0x603cfc,
     kInvGet = 0x67cc33, kAllowed = 0x50c804, kDelay = 0x65a28c, kCanUse = 0x600bd4, kText = 0x600e21, kHelp = 0x5fee4d,
     kHudIcon = 0x5d7f8b, kLaunch = 0x583160, kUpdBase = 0x57fae0, kUpdPara = 0x576fc0, kMsgBase = 0x582860,

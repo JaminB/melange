@@ -573,9 +573,37 @@ int main() {
         Expect(Decls("b2", w).size() == 1, std::string("whitelisted base ") + b);
     }
 
+    // 0.16: the Bat, with its own container class's fields.
+    {
+        auto d = Decls("bm", R"([{"name":"kWeaponSpade","base":"kWeaponBaseballBat",
+            "set":{"Radius":20,"WeaponGraphicsResourceID":"bm.Spade","RetreatTimeOverride":0}}])");
+        Expect(d.size() == 1 && d[0].baseId == 10 && d[0].set.size() == 3, "a Bat clone with melee fields");
+        Expect(wm::IsMeleeBase(10) && !wm::IsMeleeBase(1) && std::string(wm::BaseClass(10)) == wm::kMeleeContainerClass,
+               "the Bat is a melee base of MeleeWeaponPropertiesContainer");
+    }
+    Expect(Refused("bm2", R"([{"name":"kWeaponSpade","base":"kWeaponBaseballBat","set":{"PayloadGraphicsResourceID":"x"}}])",
+                   "not a settable field of MeleeWeaponPropertiesContainer"),
+           "a payload field on a Bat clone");
+    Expect(Refused("bm3", R"([{"name":"kWeaponPunch2","base":"kWeaponFirePunch"}])", "not clonable"), "the Fire Punch is not a base");
+
     // Cells.
     Expect(Refused("c1", R"([{"name":"kWeaponCellX","base":"kWeaponBazooka","cell":5}])", "cell must be"), "vanilla cell");
     Expect(Refused("c2", R"([{"name":"kWeaponCellX","base":"kWeaponBazooka","cell":"29"}])", "cell"), "cell type");
+    // The takeable cell 41 (the Binoculars): only with "replaces" naming what it holds, and "replaces" only with it.
+    {
+        auto d = Decls("c3", R"([{"name":"kWeaponCellX","base":"kWeaponBazooka","cell":41,"replaces":"kUtilityBinoculars"}])");
+        Expect(d.size() == 1 && d[0].cell == 41 && d[0].replaces == "kUtilityBinoculars", "cell 41 taken by declaration");
+    }
+    Expect(Refused("c4", R"([{"name":"kWeaponCellX","base":"kWeaponBazooka","cell":41}])", "replaces"), "cell 41 without replaces");
+    Expect(Refused("c5", R"([{"name":"kWeaponCellX","base":"kWeaponBazooka","cell":41,"replaces":"kUtilitySkipGo"}])",
+                   "holds kUtilityBinoculars"),
+           "cell 41 replacing the wrong item");
+    Expect(Refused("c6", R"([{"name":"kWeaponCellX","base":"kWeaponBazooka","cell":29,"replaces":"kUtilityBinoculars"}])",
+                   "replaces needs"),
+           "replaces on a free cell");
+    Expect(Refused("c7", R"([{"name":"kWeaponCellX","base":"kWeaponBazooka","replaces":"kUtilityBinoculars"}])",
+                   "replaces needs"),
+           "replaces without a cell");
 
     // set types.
     Expect(Refused("s1", R"([{"name":"kWeaponSetX","base":"kWeaponBazooka","set":{"Bogus":1}}])", "not a settable field"),
@@ -606,8 +634,9 @@ int main() {
            "unknown key");
     Expect(Refused("f2", R"({"name":"kWeaponShapeX"})", "must be an array"), "not an array");
     Expect(Refused("f3", R"([{"name":"kWeaponA1x","base":"kWeaponBazooka"},{"name":"kWeaponA2x","base":"kWeaponBazooka"},
-        {"name":"kWeaponA3x","base":"kWeaponBazooka"},{"name":"kWeaponA4x","base":"kWeaponBazooka"}])", "at most 3"),
-           "four clones in one mod");
+        {"name":"kWeaponA3x","base":"kWeaponBazooka"},{"name":"kWeaponA4x","base":"kWeaponBazooka"},
+        {"name":"kWeaponA5x","base":"kWeaponBazooka"}])", "at most 4"),
+           "five clones in one mod");
     {
         melange::spice::Manifest m;
         std::string e;
@@ -630,7 +659,22 @@ int main() {
         auto c = Decls("kc", R"([{"name":"kWeaponKdd","base":"kWeaponBazooka"}])");
         ref.clear();
         all = wm::Assign({a, b, c}, &ref);
-        Expect(all.size() == 3 && ref.size() == 1 && ref[0].mod == "kc", "a fourth clone refuses the later mod");
+        Expect(all.size() == 3 && ref.size() == 1 && ref[0].mod == "kc" && ref[0].text.find("no free panel cell") != std::string::npos,
+               "a fourth clone without a taken cell refuses the later mod");
+        auto t = Decls("kt", R"([{"name":"kWeaponKtt","base":"kWeaponBazooka","cell":41,"replaces":"kUtilityBinoculars"}])");
+        ref.clear();
+        all = wm::Assign({a, b, t}, &ref);
+        Expect(ref.empty() && all.size() == 4 && all[3].cell == 41 && all[3].k == 3, "a fourth clone on the taken cell 41");
+        auto t2 = Decls("kt2", R"([{"name":"kWeaponKt2","base":"kWeaponBazooka","cell":41,"replaces":"kUtilityBinoculars"}])");
+        ref.clear();
+        all = wm::Assign({a, t, t2}, &ref);
+        Expect(all.size() == 3 && ref.size() == 1 && ref[0].mod == "kt2" && ref[0].text.find("cell 41") != std::string::npos,
+               "cell 41 taken twice: the later mod is refused");
+        auto four = Decls("k4", R"([{"name":"kWeaponK41","base":"kWeaponBazooka"},{"name":"kWeaponK42","base":"kWeaponBazooka"},
+            {"name":"kWeaponK43","base":"kWeaponBazooka"},{"name":"kWeaponK44","base":"kWeaponBazooka"}])");
+        ref.clear();
+        all = wm::Assign({four}, &ref);
+        Expect(four.size() == 4 && all.empty() && ref.size() == 1, "four clones without a taken cell do not fit the free cells");
         auto d = Decls("kd", R"([{"name":"kWeaponKee","base":"kWeaponBazooka","cell":29}])");
         ref.clear();
         all = wm::Assign({a, d}, &ref);

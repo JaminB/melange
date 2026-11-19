@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.16.0
+
+Tools for a digging, executing melee weapon (the Kindjal Grave Spade). Every sim effect is deterministic and hashed
+by Wormsign.
+
+### Added
+
+- `wum.sim.carve` and `wum.sim.carveLine`: remove land without an explosion (no damage, no impulse); water, PERM
+  frames and indestructible levels are never carved. A fixed budget (4 calls a tick, 900 spheres a turn), hashed as
+  `melange.land`. The client hears every change as `Land.NewShape`.
+- `worm:kill{explode, grave, throes}`: the engine's own death at once (throes up to 10 s); `sim.wormKilled` when the
+  worm unspawns. `worm:aim()`: the aim pitch and direction. Hashed as `melange.wormkill`.
+- `wum.sim.melee`: claim a vanilla melee weapon, gate its fire into "dig" (swallowed, the turn goes on) or "strike",
+  hear press, release, strike, hit and done, `reach()` and `strike()`, and cancel or override a hit. Hashed as
+  `melange.melee`.
+- `wum.render.wormPose`, `wormCopy`, `wormBones`, `wormPoseStatus`, `wormPoseCaps`: render-only worm poses on the
+  CPU-skinned build #1077. Lay a worm down or carry it (`body`), hold the game's animation clips and pose sliders,
+  put its hands on world points, cut its head to a stump and draw the severed head.
+- `wum.render.hideHud(frames)`: leave the engine's HUD out of the picture for a cut-scene.
+- `wum.game.worms()` entries carry `aim` (the aim pitch) and `clone` (the held weapon clone).
+- Weapon clones of the Bat, told apart from it by `wum.sim.melee`. A fourth clone may take cell 41 when declared
+  with `"replaces": "kUtilityBinoculars"`; the Binoculars leave the panel for that match.
+
+### Fixed
+
+- Online, a `wum.sim.holdTurn` released sooner than about 5 s froze the match: the spectator's sim stopped at the
+  start of the hold. Spectators now run through a hold to their own turn start.
+
+Every player needs the same Melange: the three new Wormsign contributors differ from 0.15 at tick 0.
+
+### Fixed
+
+- Melange.ini is read from the disk once and then served from memory (a watcher thread drops the copy when the file
+  changes). Mods re-read their settings twice a second from Lua, and on a busy machine closing the ini could stall the
+  game's main thread for 8 seconds (an online match dropped).
+
 ## 0.15.0
 
 Erg: spawn areas dealt per match, map packs that pin their time of day and name

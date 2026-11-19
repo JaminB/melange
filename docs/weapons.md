@@ -10,8 +10,9 @@ mod's manifest.
 A clone is not a new weapon class — it's the *same* code as one of a handful of vanilla weapons (the
 **base**), given its own name, its own stats and its own panel cell. Concretely:
 
-- Only the free panel cells take a clone: **29, 39 and 40**. A match has at most 3 clones in total, across
-  every enabled mod.
+- Only the free panel cells take a clone: **29, 39 and 40**. A fourth may take **cell 41**, the Binoculars'
+  cell, but only when its entry says so (`"replaces": "kUtilityBinoculars"`, see "Taking a vanilla cell"). A match
+  has at most 3 clones in the free cells and 4 in all, across every enabled mod.
 - Firing, flight, impact and the explosion all run the base's own code — a Bazooka clone flies and explodes
   exactly like a Bazooka. What's different is a handful of container fields (`set` in the manifest) and, while
   the clone is selected, the worm's weapon name.
@@ -24,8 +25,9 @@ A clone is not a new weapon class — it's the *same* code as one of a handful o
 ## The `weapons` array
 
 Add a `weapons` array to `spice.json` (schema: [spice-1.schema.json](spice-1.schema.json)). It's only allowed
-in a `kind: "content"` mod, and it's capped at 3 entries **in total across every enabled mod** — the first mods
-in load order get the free cells; a mod that doesn't fit is refused with the reason on the Mods page.
+in a `kind: "content"` mod, and it's capped at 3 entries in the free cells (4 with a taken cell) **in total across
+every enabled mod** — the first mods in load order get the free cells; a mod that doesn't fit is refused with the
+reason on the Mods page.
 
 ```json
 "weapons": [{
@@ -51,16 +53,17 @@ in load order get the free cells; a mod that doesn't fit is refused with the rea
 |---|---|
 | `name` | A new resource name: `kWeapon` + a capital letter + 2-40 letters/digits (`^kWeapon[A-Z][A-Za-z0-9]{2,40}$`). Can't be a vanilla name, and can't start with `kWeaponCluster` or `kWeaponFactory`. Must be unique across every enabled mod. |
 | `base` | One of the whitelisted bases below. Anything else is refused at parse time with "not clonable in this version". |
-| `cell` | `29`, `39` or `40`. Optional — left out, the clone takes the first free cell in load order. Two mods asking for the same cell: the later one in load order is refused. |
+| `cell` | `29`, `39` or `40`, or `41` together with `replaces`. Optional — left out, the clone takes the first free cell in load order (never 41). Two mods asking for the same cell: the later one in load order is refused. |
+| `replaces` | Only with `"cell": 41`, and then required: `"kUtilityBinoculars"`, the item that cell holds. See "Taking a vanilla cell". |
 | `bank` | Optional: an `xomtool`-built `.xom` under `assets/data/` holding a container named `name`, of the base's class, taken instead of a plain copy of the base (`set` still applies on top). Build one with `xomtool bank` ([xomtool.md](xomtool.md)). A bank carries weapon properties only, not meshes — meshes come from the [`meshes`](spice.md#meshes-custom-3d-models) field, see "Meshes and sounds" below. |
-| `set` | Container field name → value, typed against the base's own schema (`xom_schema.inc`): a number for an `F32`/integer field, `true`/`false` for a `Bool` field, a string for a `String` field. An unknown field name or a value of the wrong type refuses the mod at parse time, naming the field. |
+| `set` | Container field name → value, typed against the base's own container class in the schema (`xom_schema.inc`): `PayloadWeaponPropertiesContainer`, or `MeleeWeaponPropertiesContainer` for the Bat. A number for an `F32`/integer field, `true`/`false` for a `Bool` field, a string for a `String` field. An unknown field name or a value of the wrong type refuses the mod at parse time, naming the field. |
 | `panelIcon` | A path under `assets/`: a PNG, 64×64 (or a multiple, box-filtered down), RGBA. |
 | `hudIcon` | A file name under `assets/loose/`, a `.tga`, named `<your mod id>.*` (never a bare vanilla-looking name — see "Icons and loose files"). |
 | `text` | `{ "name", "help" }` for the panel. Used when the game build supports it (this build does — see "Panel name" below); ignored otherwise, logged once. |
 
 ## Bases
 
-Only these five are clonable in this version. Each one is on the "ordinary" code path that doesn't special-case
+Only these six are clonable in this version. Each one is on the "ordinary" code path that doesn't special-case
 its own container name, which is what makes cloning it safe:
 
 | Base | Notes |
@@ -70,9 +73,39 @@ its own container name, which is what makes cloning it safe:
 | `kWeaponHolyHandGrenade` | |
 | `kWeaponBananaBomb` | Bomblets spawn as the (unrenamed) vanilla `Bananette`. |
 | `kWeaponGasCanister` | Its explosion does no direct damage, so a damage multiplier has no visible effect; poison from a clone isn't distinguished from poison from the vanilla canister. |
+| `kWeaponBaseballBat` | 0.16, the one melee base: see "Melee clones". |
 
-Weapons that pick their behaviour from their own name (Sheep, Homing Missile, Poison Arrow, guns, melee, and
-utility items), and cell takeover beyond 29/39/40, are not in this version.
+Weapons that pick their behaviour from their own name (Sheep, Homing Missile, Poison Arrow, guns, the other three
+melee weapons, and utility items) are not in this version.
+
+### Melee clones
+
+A clone of the Bat swings, aims and hits like the Bat (`MeleeType`, `IsAimedWeapon` and every number come from its
+own container, a copy of the Bat's), and its `set` takes the fields of `MeleeWeaponPropertiesContainer` (`Radius`,
+`RetreatTimeOverride`, `MinAimAngle`, `WeaponGraphicsResourceID`, ...). What was checked in #1077's code:
+
+- The melee entity is made from the worm's selected id (the Bat's, 10) and takes its container by the name in the
+  name slot, which the clone's selection swaps, as for a payload clone. It keeps that name at `+0x2b8`.
+- The one compare of that name with `"kWeaponBaseballBat"` (0x567f50, in the per-target impact 0x567a40) picks the
+  stats id of a hit: a clone's hits are filed as "another weapon" (0x43), as the Fire Punch's and the Prod's are.
+- `CrateLogicEntity::SetupWeaponCrate` (0x5c68e0) matches a crate's weapon name against the name table, as it
+  does for every clone base; crates are set up between turns, while no name is swapped.
+- 0x5d6420 is the Wormpot service's Prod tweak (`kWeaponProd`, "DimMak"); it never touches the Bat.
+
+`wum.sim.weapons` events (`fire`, `tick`, `impact`, `explosion`) are for payloads, so a melee clone has none: use
+`wum.sim.melee`, which claims a Bat clone by its own name, apart from the vanilla Bat (see the developer guide). A
+client mod sees the held clone in `wum.game.worms()[i].clone` (its `weapon` is the Bat's id).
+
+### Taking a vanilla cell
+
+The panel has no empty cell beyond 29, 39 and 40. A mod that needs a fourth clone may take cell 41, where the
+Binoculars sit, by naming them: `"cell": 41, "replaces": "kUtilityBinoculars"`. Nothing else ever takes that cell, and
+a mod without such an entry changes nothing. While the clone is live (the same gate as every clone, so the same on
+every peer) the cell shows the clone, the Binoculars are not on the panel, and a selection of them that still arrives
+(a replicated message, any other path) is dropped by the panel's own handler before anything is stored or posted:
+the worm keeps the weapon it holds, on every machine alike. At
+match end the cell holds the Binoculars again. If cell 41 does not hold them when the match starts, no clone of that
+match goes live.
 
 ## Lua: `wum.sim.weapons`
 
@@ -299,4 +332,4 @@ This build is honest about a few gaps rather than silently doing less than it sa
   projectile or an attached effect has not been tried. See "Meshes and sounds" above and [meshes.md](meshes.md).
 - **Sound fields are unverified.** See "Meshes and sounds" above.
 - **Separate clone ammo and delay, and name-compare bases (Sheep, Homing Missile, ...) are not in this
-  version.**
+  version.** A Bat clone shares the Bat's ammo and delay like every clone shares its base's.

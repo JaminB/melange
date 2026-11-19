@@ -57,11 +57,11 @@ after its folder — every M1-era `Mods\` folder keeps working unchanged.
 ## `weapons`: weapon clones
 
 A `kind: "content"` mod can declare up to 3 weapon clones (schema: [spice-1.schema.json](spice-1.schema.json)),
-in the free panel cells 29, 39 and 40 — shared across every enabled mod, not per mod. This is checked in two
-passes, both at every Thumper rescan:
+in the free panel cells 29, 39 and 40 — shared across every enabled mod, not per mod — and a fourth in cell 41 when
+it says `"replaces": "kUtilityBinoculars"` (Melange 0.16). This is checked in two passes, both at every Thumper rescan:
 
-1. **Shape**, right here in `spice.cpp`: at most 3 entries, each an object with a known set of keys
-   (`name`, `base`, `cell`, `bank`, `set`, `panelIcon`, `hudIcon`, `text`), `set` values that are a number, a
+1. **Shape**, right here in `spice.cpp`: at most 4 entries, each an object with a known set of keys
+   (`name`, `base`, `cell`, `replaces`, `bank`, `set`, `panelIcon`, `hudIcon`, `text`), `set` values that are a number, a
    boolean or a string. A shape error refuses the whole mod, naming the bad key or value.
 2. **Names, bases, cells and field types**, in `weapons/manifest.cpp` — the base whitelist, the resource-name
    pattern, cell conflicts between mods (later load order loses), and each `set` field checked against the

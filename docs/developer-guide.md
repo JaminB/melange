@@ -844,6 +844,8 @@ A content mod's `entry.sim` runs inside the match's own Lua VM, which is Lua 5.0
 | `wum.sim.worms()` | The slots that have a worm container, as a list, then their count |
 | `wum.sim.land()` | The land bounds `minX, minY, minZ, maxX, maxY, maxZ` (`Land.MinBounds` and `Land.MaxBounds`), or `nil, reason` |
 | `wum.sim.holdTurn(ticks)`, `releaseTurn()`, `turnHold()` | Delays the next turn start by `ticks` sim ticks (1 to 3000, that is 60 s) on every machine alike; see [The turn-start hold](#the-turn-start-hold) |
+| `wum.sim.carve(x, y, z, radius)`, `carveLine(x0, y0, z0, x1, y1, z1, radius[, step])` | Removes land without an explosion (Melange 0.16); see [Carving the land](#carving-the-land) |
+| `wum.sim.melee.claim/on/off/held/reach/mode/strike/result/list` | Takes over a vanilla melee weapon's fire input and hits (Melange 0.16); see [Melee weapons](#melee-weapons-wumsimmelee) |
 | `wum.sim.announce(text[, seconds])` | Shows `text` (at most 160 bytes of UTF-8) centred near the top of the screen for `seconds` (0.5 to 15, default 4), up to three at once (a fourth replaces the oldest); returns `true`. Every machine runs the sim, so every player sees it. It only draws ([SimAnnounce], after the engine's HUD): the match, Wormsign and replays are untouched, so it is safe in deterministic code. Melange 0.14; check `if wum.sim.announce then` |
 
 
@@ -884,6 +886,11 @@ the same tick, and nothing waits on the camera, an active object or any other pe
   would otherwise leave the spectators paused 2 s short of their own deferred turn start while it waits for the new
   player's lead. Verified on LocalNet with camera keys pressed on the spectator during the hold: both machines hold
   and release at the same ticks, Wormsign's hashes agree, no time-sync abort.
+- A hold shorter than a spectator's lag (about 5 s) used to freeze the match (0.16): the spectator had already
+  received every time-sync of the hold, including that last -1, when its own `Turn.Ended` set its lead to 0, so its
+  sim paused for good while the other machine waited at its `Turn.Started`. During a hold, on a machine whose current
+  player is not local, `SimTurnHoldNet` now sets a lead of exactly 0 to -1 through the engine's own setter (the value
+  the vanilla end-of-turn and surrender paths use), and the spectator runs on to its own deferred turn start.
 
 With Wormsign on, every sim mod's state is part of the per-tick hash, so a mod that computes differently on two machines is caught at the tick it happens, with the mod named. Wormsign hashes the mod's globals and `wum.sim.storage` (three tables deep, in any key order; functions and userdata count by type only), and whatever the mod passes to `wum.sim.hash` in that tick. Locals and upvalues are not visible to it: a mod that keeps its state there can pass it to `wum.sim.hash`.
 
@@ -907,6 +914,8 @@ allocates one table. Call the methods with `:` (`w:pos()`); `w.pos()` raises:
 | `:anchor([on])` | Pins the worm where it stands (`on` defaults to `true`); `false` frees it. Returns `true`, or `nil, "dead"` for a worm that is not alive. A second `anchor(true)` keeps the first pin |
 | `:anchored()` | `anchored, pinned`: the flag, and whether the pin is still applied (see below) |
 | `:pin()` | `x, y, z` of the pin, or `nil` when not anchored |
+| `:kill([opts])` | Kills the worm through the engine's own death (Melange 0.16); see [Scripted kills](#scripted-kills) |
+| `:aim()` | `pitch, yaw, dx, dy, dz`: the aim pitch (radians, container `+0xd0`, the angle an aimed weapon fires at), the facing angle, and the direction `(sin yaw cos pitch, sin pitch, cos yaw cos pitch)`. The sine and cosine are Melange's own (basic float operations only, not the C runtime's), so the direction is bit-identical on every peer running the same Melange (Melange 0.16; the pitch sign is to be confirmed in game: up is expected to be positive) |
 
 An anchored worm keeps its turns and can turn (A and D rotate it in place), aim, change weapon and fire, but it
 cannot walk, jump, backflip, rope, jetpack, parachute or teleport, and explosions damage it without moving it.
@@ -928,6 +937,155 @@ engine's drowning check reads the pinned position, so once the water rises over 
 starts drowning the pin is **released** (`anchored()` returns `true, false`) and the engine sinks it. Anchors end
 with the match. The `WormAnchor` module (`[WormAnchor] LogInputs=1` logs each swallowed input) holds the hooks;
 without it, or on another game build, `worm(slot)` answers `nil, "unavailable"` and `anchor` fails the same way.
+
+### Carving the land
+
+`wum.sim.carve(x, y, z, radius)` removes every destructible voxel whose centre lies within `radius` world units of
+`(x, y, z)`, from every voxel frame and from the heightmap surround, and returns the number removed (`0` when nothing
+there was solid). Melange 0.16; check `if wum.sim.carve then`. It calls the landscape's own explosion handler
+(`LandscapeLogicEntity::OnExplosion` 0x473530) directly with a zero-damage, zero-impulse message that is never posted, so:
+
+- no worm, mine, oil drum or crate is damaged or pushed, the camera does not hold for an explosion, and level scripts
+  see no `Explosion`;
+- the vanilla per-material debris and the `weapons/Debris` burst still play, and `Land.NewShape` is posted, so a
+  resting worm or object whose ground went falls;
+- water is never touched (the sea is a plane, not voxels): a hole dug below the waterline is open sea, and a worm that
+  walks into it drowns as usual;
+- PERM frames (Erg) are never carved, and on a level with `Land.Indestructable` set the call answers
+  `nil, "indestructible"`. `Explosion.HitIndestructible`, which a carve against a PERM frame sets, is put back.
+
+`radius` is 1 to 200. Voxels on the game's maps are 24 to 40 world units a side, so a carve removes whole cubes: a
+radius of about one voxel takes 1 to 8 of them. The heightmap surround (the beach or ground of many maps) is a height
+field: it can only be dug into a pit or a trench, never a cave, and each carve moves a cell only half way down to the
+sphere's floor. Its share of `removed` is the number of cells under the sphere that went down by at least 1 world unit,
+so repeating a carve at one spot reaches `0` once the pit is as deep as that sphere can make it. Returns `nil, reason`:
+`"not in a match"`, `"bad arguments"` (a radius out of range), `"budget"`, `"in hit"` (called from a `wum.sim.melee`
+`hit` handler: carve on the next tick instead), `"indestructible"`, `"unavailable"` (another game build, or
+`[LandCarve] Enabled=0`); a non-number argument raises.
+
+`wum.sim.carveLine(x0, y0, z0, x1, y1, z1, radius[, step])` carves spheres of `radius` from the first point to the
+second, both included, one every `step` world units (default `radius / 2`, at least `radius / 4`), at most 16 spheres
+(`nil, "too long"` otherwise, also for a stroke whose length overflows). It returns the total removed and the number of
+spheres. The whole stroke is checked against the budget first, so it is never cut short.
+
+The budget is fixed in Melange, the same for every player (an ini value would let two peers carve differently): 4
+calls a sim tick (a `carve` or a whole `carveLine` stroke is one call) and 900 spheres a turn (a stroke counts each of
+its spheres). A refused carve answers `nil, "budget"`. `[LandCarve] Log=1` logs each carve; it changes nothing else.
+
+Every carve runs inside the sim tick, at the same tick on every machine, with float32 arguments, on land that has the
+same history everywhere, so the result is the same on every machine; `removed` is the drop of the engine's own
+per-frame voxel counts plus the lowered heightmap cells, safe to branch on. Each carve's tick, argument bits and removed count are folded into a digest
+that the Wormsign contributor `melange.land` hashes every tick (with the budget and whether the engine side is
+live), so a land that diverged is named at the tick it did, and a peer whose LandCarve module is off or inert shows at
+tick 0.
+
+The client sees every carve, vanilla explosions included, as the engine message `Land.NewShape` with the payload
+`{radius, pos = {x, y, z}}` through `wum.events.on`.
+
+### Scripted kills
+
+`w:kill([opts])` kills the worm through the engine's own death: Melange posts the engine's script-only `Worm.KillNow`
+for the slot, which every worm already listens for, and the worm goes straight into its death throes (state 7), the
+Death animation and `Worm.LandDeath`, without waiting for the turn-end death queue. Melange 0.16.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `explode` | `true` | `false`: no small death explosion at the end of the throes (no damage, no FX, no `Explosion` message) |
+| `grave` | `true` | `false`: no gravestone |
+| `throes` | `150` | the throes' length in ticks, 1 to 500 (the engine's own is 150, 3 s). The body stays drawn, and a `wormCopy` head with it, only while the throes last: a cinematic over the dead worm must fit in them |
+
+Returns `true`; `nil, "dead"` for a worm that is not alive or was already killed by a script; `nil, "drowning"`;
+`nil, "in hit"` (called from a `wum.sim.melee` `hit` handler: kill on the next tick instead); `nil, "no worm"`;
+`nil, "unavailable"`. Bad options raise. The kill message is delivered at the next bus dispatch, the same on every
+machine. The kill counts only once the engine confirms it (its `TimeToDie` runs for the worm); a kill not confirmed
+within 25 ticks (the message was dropped, or the worm left another way first) is forgotten without an event, so a
+later vanilla death of that worm is the engine's own. When the throes of a confirmed kill end and the worm is
+unspawned, `sim.wormKilled` (`fn(name, slot, tick)`) is raised in the sim mods. The options and stage of each kill are
+the Wormsign contributor `melange.wormkill`. Never set a worm's health to 0 instead: a worm at 0 health that the engine
+did not kill stays alive.
+
+The three hooks that apply the options (after `TimeToDie` 0x5adbf0, on the death explosion 0x5a9400 and on the
+gravestone 0x5a9310) are enabled in a match only once a script has killed a worm, and act only on worms a script killed.
+
+`grave=true` makes the gravestone the way a vanilla death does. The engine line `Xrm | Error creating Grave.<style> -
+This section (N) must be explicitly loaded` that sometimes follows it is the engine's own: the same line follows vanilla
+deaths (explosions, no script) in the same test sessions, online and offline, for teams whose grave style's resource
+section was not loaded. It is not caused by `worm:kill`.
+
+### Melee weapons: `wum.sim.melee`
+
+`wum.sim.melee` puts one of the four vanilla melee weapons (`kWeaponBaseballBat`, `kWeaponFirePunch`, `kWeaponProd`,
+`kWeaponNoMoreNails`), or a weapon clone of the Bat by its own name, under a sim mod's control (Melange 0.16): a fire
+gate that turns the weapon into a tool, events for the press, release, strike and every hit, and overrides of the hit.
+Check `if wum.sim.melee then`. A Bat clone and the vanilla Bat share the Bat's weapon id but are separate claims: which
+one a worm wields is read from its melee entity's own container name, so a claim on the clone never sees the Bat's
+presses or hits and the other way round (events carry the claimed name).
+
+| Function | Returns |
+|---|---|
+| `claim(weapon[, {dig = bool, mode = "auto"\|"dig"\|"strike"}])` | `true`; `nil, "not melee"`, `"claimed by <mod>"`, `"too late"` (only while the top-level chunk runs at match start), `"denied"` (level scripts), `"too many claims"` (4), `"unavailable"`. One mod per weapon; the claimant may claim again to change the options. Without `dig = true` the gate is off (every press goes to the engine) but `press` and `release` are still reported, with mode `"strike"` |
+| `on(event, weapon\|"*", fn)`, `off(handle)` | A handle, or `nil, "unknown event"` / `"not claimed"`. Events below |
+| `held(weapon)` | `slot, heldTicks, pressTick, mode` while the fire button is held on the weapon, else `nil` |
+| `reach(weapon)` | `true` when the active worm wields it and a **worm** (not itself, not a crate, drum, mine or the land) was in the swing at the weapon's last idle sweep (the engine's own sweep, one Update old) |
+| `mode(weapon[, mode])` | The gate mode, or sets it (claimant only): `true`, `nil, "not claimed"`, `"not the claimant"` |
+| `strike(weapon)` | Starts the engine's own swing now (the can-fire rules apply): `true`; `nil, "not wielded"`, `"busy"`, `"in hit"`, `"not claimed"` |
+| `result{cancel = bool, kill = bool, damage = n, impulse = f, level = bool}` | Only inside a `hit` handler: `true`, else `nil, "not in hit"`. See below |
+| `list()` | `{{name, mod, clone, dig, mode}, ...}` (`clone`: the claim is on a weapon clone) |
+
+**The gate** (`dig = true`). When the active worm presses fire with the claimed weapon selected and the weapon is idle:
+in mode `"dig"` the press is swallowed, in `"strike"` it goes to the engine's swing, and in `"auto"` (the default) it
+goes to the swing when `reach()` is true and is swallowed otherwise. A swallowed press, its repeats and its release
+never reach the weapon: no swing, no ammo, no `Timer.EndTurn`, no `Weapon.Fired`, so the turn goes on. Use the press,
+`held()` and the release to dig. A strike ends the turn the engine's way (after `PostLaunchDelay`, then the retreat
+time). The gate sits in the melee entity's own message handler: the entity subscribes itself to `Input.FirePressed`
+and `Input.FireReleased` on the message bus, so that is where the active worm's fire arrives, on every machine in the
+same tick (the LocalNet A+B run with `[Melee] Log=1` is still to do). A press during a swing is
+the engine's and is not reported. The gate decides once, at the press: in `"auto"` a held dig that reaches a worm
+stays a dig; call `strike()` from the tick handler when `held()` and `reach()` are both true.
+
+**Events**, dispatched from a sim tick hook after the engine's update. `hit` is the exception: it runs at once,
+inside the engine's strike, so it comes **before** the `strike` event of the same swing (queued in that update and
+dispatched after it), then `done`:
+
+| Event | Handler |
+|---|---|
+| `press` | `fn(event, weapon, tick, slot, mode)`, `mode` = `"dig"` or `"strike"` (what the gate did) |
+| `release` | `fn(event, weapon, tick, slot, heldTicks, mode)`; `mode` = `"dig"`, `"strike"`, or `"cancel"` (the worm stopped wielding it: weapon change, turn end) |
+| `strike` | `fn(event, weapon, tick, slot)`: the swing has struck (after `LaunchDelay`; after its `hit` events) |
+| `hit` | `fn(event, weapon, tick, attacker, victim, x, y, z, damage, impulse)`: once per worm the strike catches, before the engine damages it; `damage` and `impulse` are the weapon's `WormDamageMagnitude` and `ImpulseMagnitude` |
+| `done` | `fn(event, weapon, tick, slot)`: the swing is over (the engine posts `Weapon.Fired` and starts the retreat) |
+
+**Hit results.** In a `hit` handler, `wum.sim.melee.result(t)` decides what the engine does with this worm:
+`{cancel = true}` skips the hit (no damage, knockback, FX or stats; the swing, ammo and turn end still happen);
+`{damage = n[, impulse = f]}` (0 to 1000, 0 to 100) damages and pushes by those numbers instead of the weapon's
+(`DamageIsPercentage` and `InstantKill` off for this hit; the engine still scales the impulse by its accuracy and
+`DoubleDamage` still doubles both); `{kill = true}` uses the engine's `InstantKill` (all the victim's health, applied
+at the turn-end death queue like any damage). `level = true` (with any of the others) knocks the victim back along
+the ground: the engine takes the knockback direction from the swing, which for the aimed Bat is the aim, so an
+upward aim lofts the victim far further than the same impulse from the Prod; `level` drops the vertical part of that
+direction for this hit only. Without a call the engine's own hit happens. The last call wins.
+A Bat strike can catch several worms: each gets its own `hit`.
+
+A `hit` handler runs inside the engine's strike loop, so everything that calls into the engine is refused there with
+`nil, "in hit"`: `strike()`, `wum.sim.carve`/`carveLine`, `worm:kill` and `wum.sim.holdTurn`. Record what you want in
+the handler and do it on the next tick. An instant execution is therefore `result{cancel = true}` in the handler, then
+`worm:kill{...}` (and the turn hold for the cinematic) from the next tick, not `result{kill = true}`, which waits for
+the turn-end death queue.
+
+To end a turn without a fall-back swing, set the weapon's `RetreatTimeOverride` (i32) with `wum.sim.weapon(name):set`
+at match start (0 ends the turn right after `PostLaunchDelay`), and use `strike()` from a dig hold. To dig straight
+down with an aimed weapon (the Bat), widen `MinAimAngle`/`MaxAimAngle` (f32, signed degrees: `-85` and `85` for
+nearly straight down to nearly straight up; both `85` pins the aim straight up) the same way.
+
+The claims, gate modes, the held press, the hit count and whether the engine side is live are the Wormsign
+contributor `melange.melee`. The hooks (the melee entity's message handler 0x569930, Update 0x569b00, Release
+0x5687d0, idle sweep 0x5683b0, the collision iterator 0x519e90 during that sweep, and the per-target impact
+0x567a40; the gate is in the message handler) are enabled only in a match where a mod claimed a weapon; `[Melee] Log=1` logs
+each press, release and hit. The wielded entity is tracked until its Release frees it and is used only while it
+belongs to the active worm. Notes: `docs/gravespade-re-input.md`.
+
+The new Wormsign contributors (`melange.land`, `melange.wormkill`, `melange.melee`) are registered whenever their
+modules are installed, so a 0.15 and a 0.16 peer differ at tick 0: every player needs the same Melange.
 
 ## Building from source
 

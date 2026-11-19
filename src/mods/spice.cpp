@@ -384,8 +384,8 @@ bool ParseWeapons(const json::Value& a, Manifest* out, std::vector<Error>* errs)
         AddError(errs, &a, "weapons", "weapons must be an array");
         return false;
     }
-    if (a.items.size() > 3) {
-        AddError(errs, &a, "weapons", "at most 3 weapons (the free panel cells)");
+    if (a.items.size() > 4) {
+        AddError(errs, &a, "weapons", "at most 4 weapons (the free panel cells 29, 39, 40 and the takeable cell 41)");
         return false;
     }
     bool ok = true;
@@ -420,11 +420,13 @@ bool ParseWeapons(const json::Value& a, Manifest* out, std::vector<Error>* errs)
                 str(m, "hudIcon", &w.hudIcon, 120);
             } else if (key == "cell") {
                 if (!m.IsInteger() || m.number < 0 || m.number > 41) {
-                    AddError(errs, &m, "weapons.cell", "weapons.cell must be 29, 39 or 40");
+                    AddError(errs, &m, "weapons.cell", "weapons.cell must be 29, 39, 40 or 41");
                     good = false;
                 } else {
                     w.cell = static_cast<int>(m.number);
                 }
+            } else if (key == "replaces") {
+                str(m, "replaces", &w.replaces, 48);
             } else if (key == "set") {
                 if (!m.IsObject() || m.members.size() > 64) {
                     AddError(errs, &m, "weapons.set", "weapons.set must be an object of at most 64 fields");
