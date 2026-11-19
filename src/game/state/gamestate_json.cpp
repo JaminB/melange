@@ -64,17 +64,18 @@ std::string SnapshotJson(const Snapshot& s, bool available, bool attract) {
     jsonmini::Arr teams, worms;
     for (int i = 0; i < s.teamCount && i < 4; ++i) {
         const Team& t = s.teams[i];
-        teams.Raw(jsonmini::Obj()
-                      .Int("slot", t.slot)
-                      .Str("name", t.name)
-                      .Bool("active", t.active)
-                      .Bool("ai", t.ai)
-                      .Bool("local", t.local)
-                      .Int("colour", t.colour)
-                      .Int("alliance", t.alliance)
-                      .Int("roundsWon", t.roundsWon)
-                      .Int("score", t.score)
-                      .End());
+        jsonmini::Obj o;
+        o.Int("slot", t.slot)
+            .Str("name", t.name)
+            .Bool("active", t.active)
+            .Bool("ai", t.ai)
+            .Bool("local", t.local)
+            .Int("colour", t.colour)
+            .Int("alliance", t.alliance)
+            .Int("roundsWon", t.roundsWon)
+            .Int("score", t.score);
+        if (t.voice[0]) o.Str("voice", t.voice);
+        teams.Raw(o.End());
     }
     for (int i = 0; i < s.wormCount && i < 16; ++i) {
         const Worm& w = s.worms[i];

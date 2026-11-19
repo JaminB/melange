@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "audio/bank_name.h"
 #include "game/state/gamestate_internal.h"
 
 namespace melange::gamestate::detail {
@@ -253,6 +254,10 @@ void FillSnapshot(const Layout& l, const Engine& e, const MatchInfo& m, Snapshot
         t.ai = Rd<uint8_t>(c + 0x6e) != 0;
         t.local = Rd<uint8_t>(c + 0x75) != 0;
         t.score = static_cast<int32_t>(Rd<uint32_t>(c + 0x48));
+        char bank[64];
+        ReadCString(Rd<uintptr_t>(c + 0x20), bank, sizeof bank);
+        const std::string voice = ::melange::audio::fsb::NormalizeBankName(bank);
+        memcpy(t.voice, voice.c_str(), voice.size() + 1);
         out->teams[out->teamCount++] = t;
     }
     for (int i = 0; i < 16; ++i) {

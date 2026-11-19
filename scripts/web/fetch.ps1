@@ -144,7 +144,7 @@ if (-not $NoThirdParty) {
     [void]$md.Append("| Package | Version | Licence | Use |`n|---|---|---|---|`n")
     foreach ($p in $pkgs) { [void]$md.Append("| $($p.name) | $($p.version) | $($p.license) | $(if ($p.dev) { 'build/test' } else { 'ships' }) |`n") }
     foreach ($n in @("node", "esbuild")) { [void]$md.Append("| $(if ($n -eq 'node') { 'Node.js (win-x64)' } else { '@esbuild/win32-x64' }) | $($tlock.$n.version) | $($tlock.$n.license) | build/test |`n") }
-    [void]$md.Append("| civetweb | 1.16 | MIT | ships (melange.asi) |`n| miniz | 3.1.2 | MIT | ships (melange.asi) |`n")
+    [void]$md.Append("| civetweb | 1.16 | MIT | ships (melange.asi) |`n| miniz | 3.1.2 | MIT | ships (melange.asi) |`n| minimp3 | git 1428237 | CC0-1.0 | ships (melange.asi) |`n")
     foreach ($p in $pkgs) {
         [void]$md.Append("`n## $($p.name) $($p.version)`n`n``````text`n$(License-Text (Join-Path $nm ($p.name -replace '/', '\')))`n```````n")
     }

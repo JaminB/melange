@@ -23,6 +23,7 @@ struct Team {
     bool active, ai, local;
     int32_t score;
     char name[32];
+    char voice[33];                   // speech bank (SfxBankName, container +0x20), e.g. "voclassi"; "" if unreadable (0.17)
 };
 struct Match {
     bool inMatch, online;

@@ -6,6 +6,7 @@
 #include <limits>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "audio/audio.h"
 #include "audio/clips.h"
@@ -73,11 +74,11 @@ int Load(lua_State* L) {
     return 1;
 }
 
-float Num(lua_State* L, int t, const char* key, float def, float lo, float hi) {
+float Num(lua_State* L, int t, const char* key, float def, float lo, float hi, const char* fn = "wum.audio.play") {
     lua_getfield(L, t, key);
     float v = def;
     if (!lua_isnil(L, -1)) {
-        if (lua_type(L, -1) != LUA_TNUMBER) luaL_error(L, "wum.audio.play: %s must be a number", key);
+        if (lua_type(L, -1) != LUA_TNUMBER) luaL_error(L, "%s: %s must be a number", fn, key);
         const double d = lua_tonumber(L, -1);
         // +/-infinity clamps like any other out-of-range number; only NaN has no side to clamp to.
         v = std::isnan(d) ? def : static_cast<float>(std::clamp(d, static_cast<double>(lo), static_cast<double>(hi)));
@@ -154,6 +155,86 @@ int StopAll(lua_State* L) {
     return 1;
 }
 
+// A clip handle argument: 0 when it cannot be one (the facade then answers "unknown sound" / false).
+uint32_t Handle(lua_State* L, int i) {
+    const lua_Integer h = luaL_checkinteger(L, i);
+    return h > 0 && h <= 0xFFFFFFFFll ? static_cast<uint32_t>(h) : 0;
+}
+
+// ---- Melange 0.17: cut, unload, set, and wum.audio.voice (the game's own speech banks).
+int Cut(lua_State* L) {
+    const uint32_t clip = Handle(L, 1);
+    const double from = luaL_checknumber(L, 2);
+    const double len = luaL_checknumber(L, 3);
+    const double fade = lua_isnoneornil(L, 4) ? au::kDefaultCutFade : luaL_checknumber(L, 4);
+    Gen* g = CurrentGen();
+    if (!g) return Fail(L, "needs a mod context");
+    Hook(g);
+    std::string why;
+    const uint32_t id = au::CutClip(g, clip, from, len, fade, &why);
+    if (!id) return Fail(L, why.c_str());
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+int Unload(lua_State* L) {
+    const uint32_t clip = Handle(L, 1);
+    Gen* g = CurrentGen();
+    lua_pushboolean(L, g && clip && au::UnloadClip(g, clip));
+    return 1;
+}
+
+int Set(lua_State* L) {
+    const lua_Integer v = luaL_checkinteger(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    // An absent or NaN field keeps the voice's current value (a NaN has no side to clamp to).
+    const float volume = Num(L, 2, "volume", NAN, 0.0f, 2.0f, "wum.audio.set");
+    const float pitch = Num(L, 2, "pitch", NAN, 0.5f, 2.0f, "wum.audio.set");
+    const bool hasVolume = !std::isnan(volume), hasPitch = !std::isnan(pitch);
+    const bool ok = v > 0 && v <= 0xFFFFFFFFll &&
+                    au::SetVoice(Owner(), static_cast<uint32_t>(v), hasVolume ? &volume : nullptr, hasPitch ? &pitch : nullptr);
+    lua_pushboolean(L, ok);
+    return 1;
+}
+
+int VoiceLines(lua_State* L) {
+    const std::string bank = luaL_checkstring(L, 1);
+    std::vector<au::VoiceLine> lines;
+    std::string why;
+    if (!au::VoiceLines(bank, &lines, &why)) return Fail(L, why.c_str());
+    lua_createtable(L, static_cast<int>(lines.size()), 0);
+    for (size_t i = 0; i < lines.size(); ++i) {
+        lua_createtable(L, 0, 2);
+        lua_pushlstring(L, lines[i].name.data(), lines[i].name.size());
+        lua_setfield(L, -2, "name");
+        lua_pushnumber(L, lines[i].seconds);
+        lua_setfield(L, -2, "seconds");
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+
+int VoiceLoad(lua_State* L) {
+    const std::string bank = luaL_checkstring(L, 1);
+    const std::string line = luaL_checkstring(L, 2);
+    Gen* g = CurrentGen();
+    if (!g) return Fail(L, "needs a mod context");
+    Hook(g);
+    std::string why;
+    const uint32_t id = au::LoadVoice(g, bank, line, &why);
+    if (!id) return Fail(L, why.c_str());
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+void PushVoice(lua_State* L) {
+    static const luaL_Reg kVoice[] = {{"lines", VoiceLines}, {"load", VoiceLoad}, {nullptr, nullptr}};
+    lua_newtable(L);
+    RegisterFunctions(L, -1, kVoice);
+    PushFrozen(L, -1);
+    lua_remove(L, -2);
+}
+
 // ---- wum.audio.music: silencing the game's own music (Melange 0.12). One request per mod generation; the audio module
 // ORs them, fades, and drops a generation's request in au::Release (its cleanup below).
 int MusicAvailable(lua_State* L) {
@@ -200,12 +281,15 @@ void PushMusic(lua_State* L) {
 }
 
 void Shared(lua_State* L, int wum) {
-    static const luaL_Reg kAudio[] = {{"ready", Ready}, {"load", Load}, {"play", Play}, {"stop", Stop}, {"stopAll", StopAll},
+    static const luaL_Reg kAudio[] = {{"ready", Ready},     {"load", Load},     {"play", Play}, {"stop", Stop},
+                                      {"stopAll", StopAll}, {"cut", Cut},       {"unload", Unload}, {"set", Set},
                                       {nullptr, nullptr}};
     lua_newtable(L);
     RegisterFunctions(L, -1, kAudio);
     PushMusic(L);
     lua_setfield(L, -2, "music");
+    PushVoice(L);
+    lua_setfield(L, -2, "voice");
     lua_setfield(L, wum, "audio");
 }
 

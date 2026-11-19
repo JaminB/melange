@@ -414,13 +414,17 @@ int GameTeams(lua_State* L) {
     lua_createtable(L, s.teamCount, 0);
     for (int i = 0; i < s.teamCount; ++i) {
         const gamestate::Team& t = s.teams[i];
-        lua_createtable(L, 0, 5);
+        lua_createtable(L, 0, 6);
         SetInt(L, "slot", t.slot);
         lua_pushstring(L, t.name);
         lua_setfield(L, -2, "name");
         SetBool(L, "active", t.active);
         SetBool(L, "ai", t.ai);
         SetBool(L, "local", t.local);
+        if (t.voice[0]) {  // the speech bank, for wum.audio.voice (Melange 0.17)
+            lua_pushstring(L, t.voice);
+            lua_setfield(L, -2, "voice");
+        }
         lua_rawseti(L, -2, i + 1);
     }
     return 1;

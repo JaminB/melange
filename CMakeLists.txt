@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Melange VERSION 0.16.0 LANGUAGES C CXX)
+project(Melange VERSION 0.17.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Melange must be built for 32-bit x86 (WormsMayhem.exe is a 32-bit process). Use build.ps1.")
@@ -48,6 +48,14 @@ FetchContent_MakeAvailable(miniz)
 FetchContent_Declare(stb
     URL https://github.com/nothings/stb/archive/2c980bb59875b0d32144a71867fbdebb2f77cd20.tar.gz)
 FetchContent_MakeAvailable(stb)
+
+# Header-only minimp3 (CC0) for wum.audio.voice: decodes the MPEG samples of the game's speech banks (Melange 0.17).
+FetchContent_Declare(minimp3
+    URL https://github.com/lieff/minimp3/archive/142823796ab8efa55e1bf11406028f3be77ecceb.tar.gz
+    URL_HASH SHA256=266aceab9143e80e06a3a5312bde60636b1252ce2c36cb07ae457305ddca8f6b
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR not-a-cmake-project)
+FetchContent_MakeAvailable(minimp3)
 
 # Lua 5.4.7 for the Sandbox VM, compiled as C++ so that lua_error throws and destructors in bindings run.
 FetchContent_Declare(lua
@@ -165,7 +173,7 @@ add_library(melange SHARED ${MELANGE_SOURCES} src/core/version.rc ${CMAKE_BINARY
 add_dependencies(melange oasis_web)
 set_target_properties(melange PROPERTIES SUFFIX ".asi" PREFIX "")
 # src/sdk is on the include path so public headers include as "melange/<name>.h".
-target_include_directories(melange PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated ${stb_SOURCE_DIR})
+target_include_directories(melange PRIVATE src src/sdk ${CMAKE_BINARY_DIR}/generated ${stb_SOURCE_DIR} ${minimp3_SOURCE_DIR})
 target_compile_definitions(melange PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(melange PRIVATE /W4 /utf-8 /permissive- /Zi /wd4100)
 target_link_options(melange PRIVATE /DEBUG /OPT:REF /OPT:ICF /SAFESEH:NO)
@@ -714,8 +722,9 @@ target_link_libraries(tweak_selftest PRIVATE safetyhook::safetyhook bcrypt psapi
 add_executable(audio_selftest
     tests/audio_selftest.cpp
     src/audio/wav.cpp
-    src/audio/clips.cpp)
-target_include_directories(audio_selftest PRIVATE src)
+    src/audio/clips.cpp
+    src/audio/fsb_voice.cpp)
+target_include_directories(audio_selftest PRIVATE src ${minimp3_SOURCE_DIR})
 target_compile_definitions(audio_selftest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(audio_selftest PRIVATE /W4 /utf-8 /permissive-)
 target_link_options(audio_selftest PRIVATE /SAFESEH:NO)

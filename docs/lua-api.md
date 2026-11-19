@@ -154,7 +154,7 @@ Read-only game state.
 | `wum.game.ui()` | `{weaponPanel, pause, readyIntro, feCursor, attract}` booleans: the weapon panel is open, a pause menu or popup is up, the "Ready?" turn intro shows, the frontend's own menu cursor is active, the attract demo runs. `nil` on an unrecognised build. Changes are also sent as `melange.ui`. (Melange 0.12) |
 | `wum.game.tick()` | Simulation ticks (50 per second) since the match started, when the sim bridge is running; otherwise 0. |
 | `wum.game.worms()` | The worms of the current match, an array of `{slot, team, name, health, alive, pos={x,y,z}, vel={x,y,z}, yaw, weapon}` (`vel` is the engine's own velocity in world units per second: the game keeps it per millisecond of game time and Melange multiplies by 1000; it is the worm's physics velocity, so it is about zero while the worm stands or walks and large while it flies, falls or is knocked back; `weapon` is the weapon id, absent when none; `yaw` is the facing angle in radians about +Y, the facing direction is `(sin yaw, 0, cos yaw)`, it is not wrapped to a range and it spins while a worm is thrown; `aim` (Melange 0.16) is the aim pitch in radians, the angle an aimed weapon fires at; `clone` (Melange 0.16) is the name of the weapon clone the active worm holds, for example `"kWeaponGraveSpade"`, with `weapon` its base's id, and absent for a vanilla weapon). Empty outside a match; `nil, "unavailable"` on an unrecognised game build or with `[GameState] Enabled=0`. |
-| `wum.game.teams()` | The teams of the current match, an array of `{slot, name, active, ai, local}`; empty outside a match, `nil, "unavailable"` as above. |
+| `wum.game.teams()` | The teams of the current match, an array of `{slot, name, active, ai, local, voice}`; empty outside a match, `nil, "unavailable"` as above. `voice` (Melange 0.17) is the team's speech bank, such as `"voclassi"`, for `wum.audio.voice`; it is absent when it could not be read. |
 | `wum.game.activeWorm()` | The slot of the worm whose turn it is, or `nil`. |
 | `wum.game.theme()` | The level theme of the current match as the game names it (for example `"SPACE"`), or `nil` outside a match. |
 | `wum.game.match()` | The current match's clocks and levels, or `nil` outside a match (and on an unrecognised build or with `[GameState] Enabled=0`). See [below](#wumgamematch). |
@@ -751,6 +751,9 @@ Files must be WAV: PCM (format 1, or `WAVE_FORMAT_EXTENSIBLE` with a PCM subform
 | `wum.audio.play(handle[, opts])` | Starts the sound and returns a voice id, an integer, or `nil, reason` (`"audio unavailable"`, `"unknown sound"`, `"too many voices"`). `opts` is a table, all fields optional: `volume` = 0 to 2, default 1; `pitch` = a frequency ratio from 0.5 to 2.0, default 1 (2.0 is an octave up and half as long); `loop` = a boolean, default `false`, a looping voice plays until `stop` or `stopAll`; `pos` = `{x=, y=, z=}` (or `{x, y, z}`) in world units, which makes the sound positional. Numbers outside a range, infinities included, are clamped; a `NaN` volume or pitch is replaced by the default, and a `NaN` `pos` component makes the sound silent. Without `pos` the sound is plain 2D. |
 | `wum.audio.stop(voice)` | Stops a voice and returns `true`, or `false` if it is unknown, has already ended, or belongs to another mod. |
 | `wum.audio.stopAll()` | Stops every voice this mod has playing and returns how many. |
+| `wum.audio.cut(handle, from, len[, fade])` | (Melange 0.17) A new handle for the part of a sound from `from` seconds, `len` seconds long, clamped to the sound, or `nil, reason` (`"unknown sound"`, `"empty cut"` when nothing is left, or a limit as for `load`). Both ends get a linear fade of `fade` seconds (default 0.008, 0 to 0.25, at most half the cut) so the cut does not click. It is a copy: it counts towards the 64 sounds and 16 MiB, and it stays valid after the source is unloaded. The same arguments (to the sample) return the same handle. |
+| `wum.audio.unload(handle)` | (Melange 0.17) Frees one of this mod's sounds, its memory and its slot, and returns `true`, or `false` if the handle is unknown. Voices already playing it finish. |
+| `wum.audio.set(voice, opts)` | (Melange 0.17) Changes a playing voice of this mod: `volume` (0 to 2; a positional voice keeps its distance falloff) and `pitch` (0.5 to 2.0), clamped as for `play`; a field left out or `NaN` is unchanged. Returns `true`, or `false` if the voice is unknown, has ended or is another mod's. |
 
 A positional sound is attenuated by its distance to the render camera: full volume within `[Audio] Near` (150 world
 units by default), falling linearly to silence at `[Audio] Far` (1500), recalculated every frame, so a moving camera
@@ -790,6 +793,29 @@ silently (so nothing that waits on it changes), and the player's saved music vol
 | `wum.audio.music.suppressed()` | `effective, mine`: whether the music is silenced (by any mod), and whether this mod asks for it. |
 
 `wum.audio.play` also takes `{kind = "music"}` in Melange 0.12: such a sound is silenced together with the game music.
+
+### `wum.audio.voice`
+
+Melange 0.17 reads the game's own speech from the player's install (`Data\Audio\PC\vo*.fsb`, one bank per team voice),
+so a mod can play or remix a team's lines without shipping them. A bank is named by its file without `.fsb`, in any case
+(`"voclassi"`, `"voRussian"`); `wum.game.teams()` gives each team's as `voice`. Names are 1 to 32 letters, digits, `_` or
+`-` and start with `vo`. A bank's table is read once; a line is decoded (MPEG or 16-bit PCM) when it is loaded. Detect it
+with `if wum.audio.voice then ... end`.
+
+| Name | Description |
+|---|---|
+| `wum.audio.voice.lines(bank)` | The bank's lines, an array of `{name, seconds}` in bank order, or `nil, "unknown bank"` / `nil, "unreadable bank"`. Names are the bank's own, verbatim (they differ between banks: `"nooo1"`, `"Noooo!_1"`, `"leavemealone"`, `"taunt 2"`). |
+| `wum.audio.voice.load(bank, line)` | Decodes one line into this mod's sounds and returns a handle for `play`, `cut` and `unload`, or `nil, reason` (the bank reasons, `"unknown line"`, `"unsupported sample format"`, or a limit as for `load`). `line` matches exactly first, then ignoring case. Loading it again returns the same handle. It counts towards the 64 sounds and 16 MiB. |
+
+```lua
+local team = wum.game.teams()[1]
+local line = team and team.voice and wum.audio.voice.load(team.voice, "leavemealone")
+if line then
+  local bit = wum.audio.cut(line, 0.1, 0.6)              -- the first word or two, faded at both ends
+  local v = wum.audio.play(bit, {pitch = 1.2})
+  if v then wum.audio.set(v, {volume = 0.5}) end
+end
+```
 
 ## `wum.media`
 

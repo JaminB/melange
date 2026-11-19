@@ -29,6 +29,7 @@ public:
                bool music = false);
     void SetMusicGain(float g);  // 0..1, the submix's volume
     void SetVolume(uint32_t id, float volume);
+    void SetPitch(uint32_t id, float ratio);  // frequency ratio, clamped to 0.5..2 (voices are created for up to 2)
     // Stops and flushes. The voice is recycled at once when nothing is left queued on it, else by a later Poll.
     void Stop(uint32_t id);
 
